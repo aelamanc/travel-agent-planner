@@ -1,6 +1,6 @@
 # Agentic Travel Itinerary Planner
 
-Compares three agentic reasoning strategies (ReAct, Plan-then-Execute, Self-Critique) against a zero-shot baseline for automated travel itinerary generation using GPT-4o.
+Compares three agentic reasoning strategies (ReAct, Plan-then-Execute, Self-Critique) against a zero-shot baseline for automated travel itinerary generation using GPT-4o. All strategy logic is implemented from scratch using the OpenAI SDK — no LangChain or agent frameworks.
 
 ## Setup
 
@@ -17,47 +17,44 @@ cp .env.example .env
 # Edit .env and add your OpenAI API key
 ```
 
+### Live Mode (optional)
+
+To use real APIs instead of mock data, add these keys to your `.env`:
+
+```
+AMADEUS_API_KEY=...          # flights + hotels (free test environment)
+AMADEUS_API_SECRET=...
+OPENWEATHER_API_KEY=...      # weather (free tier, 1000 calls/day)
+GOOGLE_PLACES_API_KEY=...    # attractions (free $200/month credit)
+```
+
 ## Run
 
 ```bash
-# Single query through ReAct strategy
+# Single query with mock data (default)
 python main.py
+
+# Single query with real API data
+python main.py --mode live
 
 # Run tests (no API key needed — tests use mock tools only)
 pytest tests/ -v
 
-# Run full evaluation across all strategies and scenarios
-python run_eval.py
+# Full evaluation harness
+python run_eval.py               # mock mode
+python run_eval.py --mode live   # live mode
 ```
 
-## Project Structure
+## Tools
 
-```
-├── main.py                      # Single-query entrypoint (ReAct)
-├── run_eval.py                  # Full evaluation harness entrypoint
-├── src/
-│   ├── models.py                # Pydantic output schema (ItineraryResult)
-│   ├── baseline.py              # Zero-shot baseline (no tools)
-│   ├── tools/
-│   │   ├── base.py              # BaseTool interface
-│   │   ├── flights.py           # search_flights (mock)
-│   │   ├── hotels.py            # search_hotels (mock)
-│   │   ├── weather.py           # get_weather (mock)
-│   │   └── attractions.py       # get_attractions (mock)
-│   ├── strategies/
-│   │   ├── base.py              # BaseStrategy interface
-│   │   ├── react.py             # ReAct (implemented)
-│   │   ├── plan_execute.py      # Plan-then-Execute (skeleton)
-│   │   └── self_critique.py     # Self-Critique (skeleton)
-│   └── evaluation/
-│       ├── scenarios.py         # 40 evaluation scenarios
-│       ├── metrics.py           # Scoring functions
-│       └── harness.py           # Eval loop + CSV output
-├── tests/
-│   ├── test_tools.py            # Tool unit tests
-│   └── test_strategies.py       # Strategy infrastructure tests
-└── results/                     # CSV and JSON output
-```
+Each tool supports two modes: `mock` (hardcoded data) and `live` (real API calls). The mode is set via `--mode` flag — strategies don't know which mode is active.
+
+| Tool | Mock Data | Live API |
+|---|---|---|
+| `search_flights` | Hardcoded flights for Paris/Tokyo/Rome | Amadeus Flight Offers |
+| `search_hotels` | Hardcoded hotels for Paris/Tokyo/Rome | Amadeus Hotel Search |
+| `get_weather` | Hardcoded 7-day forecasts | OpenWeatherMap 5-day forecast |
+| `get_attractions` | Hardcoded attractions with categories | Google Places Text Search |
 
 ## Strategies
 
@@ -68,9 +65,8 @@ python run_eval.py
 | **Plan-then-Execute** | Generate full plan upfront, execute all steps, synthesize |
 | **Self-Critique** | Gather all data, draft itinerary, critique, refine |
 
-## Evaluation Metrics
+## Evaluation
 
-1. **Goal completion** — were flights, hotel, daily plan, and weather all returned?
-2. **Constraint satisfaction** — did the itinerary respect budget, dates, and preferences?
-3. **Latency** — wall-clock seconds
-4. **Token cost** — total tokens across all LLM calls
+- **40 scenarios** across 4 categories: simple, budget-constrained, multi-city, preference-heavy
+- **Metrics:** goal completion, constraint satisfaction, latency, token cost
+- Results written to `results/` as CSV
