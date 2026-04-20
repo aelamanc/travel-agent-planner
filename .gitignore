@@ -6,3 +6,4 @@ results/*.csv
 results/*.png
 .venv/
 .DS_Store
+CLAUDE.md
