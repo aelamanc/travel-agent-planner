@@ -29,7 +29,8 @@ def run_evaluation(
 
     os.makedirs(output_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_path = os.path.join(output_dir, f"eval_{timestamp}.csv")
+    strategy_tag = "_".join(s.strategy_name for s in strategies)
+    csv_path = os.path.join(output_dir, f"eval_{strategy_tag}_{timestamp}.csv")
 
     fieldnames = [
         "scenario_id",
