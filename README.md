@@ -22,10 +22,9 @@ cp .env.example .env
 To use real APIs instead of mock data, add these keys to your `.env`:
 
 ```
-AMADEUS_API_KEY=...          # flights + hotels (free test environment)
-AMADEUS_API_SECRET=...
+SERPAPI_KEY=...              # flights (Google Flights via SerpAPI, 250 searches/month free)
 OPENWEATHER_API_KEY=...      # weather (free tier, 1000 calls/day)
-FOURSQUARE_API_KEY=...       # attractions
+GEOAPIFY_API_KEY=...         # attractions (Geoapify Places, 3000 credits/day free)
 ```
 
 ## Run
@@ -59,10 +58,10 @@ Each tool supports two modes: `mock` (hardcoded data) and `live` (real API calls
 
 | Tool | Mock Data | Live API |
 |---|---|---|
-| `search_flights` | Hardcoded flights for Paris/Tokyo/Rome | Amadeus Flight Offers |
+| `search_flights` | Hardcoded flights for Paris/Tokyo/Rome | SerpAPI Google Flights |
 | `search_hotels` | Hardcoded hotels for Paris/Tokyo/Rome | Amadeus Hotel Search |
 | `get_weather` | Hardcoded 7-day forecasts | OpenWeatherMap 5-day forecast |
-| `get_attractions` | Hardcoded attractions with categories | Foursquare Places API |
+| `get_attractions` | Hardcoded attractions with categories | Geoapify Places API |
 
 ## Strategies
 

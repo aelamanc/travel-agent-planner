@@ -1,6 +1,7 @@
 """Pydantic models for the travel itinerary planner."""
 
-from pydantic import BaseModel
+import re
+from pydantic import BaseModel, field_validator
 
 
 class FlightOption(BaseModel):
@@ -13,6 +14,17 @@ class FlightOption(BaseModel):
     price: float
     duration_hours: float
     stops: int
+
+    @field_validator("stops", mode="before")
+    @classmethod
+    def coerce_stops(cls, v):
+        if isinstance(v, str):
+            low = v.lower()
+            if "non" in low or "direct" in low:
+                return 0
+            m = re.search(r"\d+", v)
+            return int(m.group()) if m else 0
+        return v if v is not None else 0
 
 
 class HotelOption(BaseModel):
@@ -27,10 +39,15 @@ class HotelOption(BaseModel):
 class Attraction(BaseModel):
     name: str
     category: str
-    rating: float
-    price: float
-    description: str
-    duration_hours: float
+    rating: float = 0.0
+    price: float = 0.0
+    description: str = ""
+    duration_hours: float = 0.0
+
+    @field_validator("rating", "price", "duration_hours", mode="before")
+    @classmethod
+    def coerce_float(cls, v):
+        return 0.0 if v is None else v
 
 
 class DayPlan(BaseModel):

@@ -13,7 +13,7 @@ TOOL_EXTRACTION_SYSTEM_PROMPT = """\
 You are a travel query parser. Extract structured parameters from the user's travel \
 request and return ONLY a valid JSON object (no markdown) with these fields:
 {
-  "destination": "city name",
+  "destinations": ["city1", "city2", ...],
   "origin": "departure city or airport (default JFK if not mentioned)",
   "start_date": "YYYY-MM-DD",
   "end_date": "YYYY-MM-DD",
@@ -22,12 +22,18 @@ request and return ONLY a valid JSON object (no markdown) with these fields:
   "max_hotel_per_night": null or number,
   "preferences": []  (list of categories from: museum, landmark, food, park, shopping, tour)
 }
-If any date is not explicitly given, infer a reasonable near-future date.
+- Always return "destinations" as an array, even for a single city (e.g. ["Paris"]).
+- For multi-city trips list every city in order (e.g. ["Tokyo", "Rome"]).
+- If any date is not explicitly given, infer a reasonable near-future date.
 """
 
 DRAFT_SYSTEM_PROMPT = """\
 You are a travel planning assistant. Using the tool results provided, create a \
 complete travel itinerary draft.
+
+For multi-city trips: set "destination" to a comma-separated string (e.g. "Paris, Tokyo"), \
+use the outbound flight to the first city as "selected_flight", pick the best hotel for \
+the primary city as "selected_hotel", and distribute daily_plan entries across all cities.
 
 Return ONLY a valid JSON object (no markdown) with these exact fields:
 {
@@ -124,7 +130,11 @@ class SelfCritiqueStrategy(BaseStrategy):
         total_tokens += extract_response.usage.total_tokens
         params = json.loads(extract_response.choices[0].message.content)
 
-        destination = params.get("destination", "Paris")
+        raw_destinations = params.get("destinations") or [params.get("destination", "Paris")]
+        destinations = [d for d in raw_destinations if d]
+        if not destinations:
+            destinations = ["Paris"]
+
         origin = params.get("origin", "JFK")
         start_date = params.get("start_date", "2025-06-15")
         end_date = params.get("end_date", "2025-06-20")
@@ -132,37 +142,32 @@ class SelfCritiqueStrategy(BaseStrategy):
         max_flight_price = params.get("max_flight_price") or params.get("max_budget")
         max_hotel_ppn = params.get("max_hotel_per_night")
 
-        # ── Phase 2: Gather all tool data ─────────────────────────────
-        flight_args = {"origin": origin, "destination": destination, "date": start_date}
-        if max_flight_price:
-            flight_args["max_price"] = max_flight_price
+        # ── Phase 2: Gather tool data for every destination ───────────
+        tool_results = {}
+        for dest in destinations:
+            flight_args = {"origin": origin, "destination": dest, "date": start_date}
+            if max_flight_price:
+                flight_args["max_price"] = max_flight_price
 
-        hotel_args = {
-            "destination": destination,
-            "check_in": start_date,
-            "check_out": end_date,
-        }
-        if max_hotel_ppn:
-            hotel_args["max_price_per_night"] = max_hotel_ppn
+            hotel_args = {"destination": dest, "check_in": start_date, "check_out": end_date}
+            if max_hotel_ppn:
+                hotel_args["max_price_per_night"] = max_hotel_ppn
 
-        attraction_args = {"destination": destination}
-        if preferences:
-            attraction_args["preferences"] = preferences
+            attraction_args = {"destination": dest}
+            if preferences:
+                attraction_args["preferences"] = preferences
 
-        flights_data = self._execute_tool("search_flights", flight_args)
-        hotels_data = self._execute_tool("search_hotels", hotel_args)
-        weather_data = self._execute_tool(
-            "get_weather",
-            {"destination": destination, "start_date": start_date, "end_date": end_date},
-        )
-        attractions_data = self._execute_tool("get_attractions", attraction_args)
+            tool_results[dest] = {
+                "flights": self._execute_tool("search_flights", flight_args),
+                "hotels": self._execute_tool("search_hotels", hotel_args),
+                "weather": self._execute_tool(
+                    "get_weather",
+                    {"destination": dest, "start_date": start_date, "end_date": end_date},
+                ),
+                "attractions": self._execute_tool("get_attractions", attraction_args),
+            }
 
-        tool_results = {
-            "search_flights": flights_data,
-            "search_hotels": hotels_data,
-            "get_weather": weather_data,
-            "get_attractions": attractions_data,
-        }
+        destination = destinations[0] if len(destinations) == 1 else ", ".join(destinations)
 
         # ── Phase 3: Draft itinerary ──────────────────────────────────
         tool_context = json.dumps(tool_results, indent=2)
@@ -235,9 +240,33 @@ class SelfCritiqueStrategy(BaseStrategy):
     def _build_result(
         self, data: dict, critique: dict, tokens: int, latency: float
     ) -> ItineraryResult:
-        flight = data.get("selected_flight", {})
+        # Normalize destination (LLM sometimes returns a list for multi-city)
+        destination = data.get("destination", "unknown")
+        if isinstance(destination, list):
+            destination = ", ".join(str(d) for d in destination)
+
         hotel = data.get("selected_hotel", {})
         daily_plan = data.get("daily_plan", [])
+
+        # Normalize daily_plan (LLM sometimes returns a dict keyed by city)
+        if isinstance(daily_plan, dict):
+            flat: list = []
+            for v in daily_plan.values():
+                if isinstance(v, list):
+                    flat.extend(v)
+            daily_plan = flat
+
+        # Normalize hotel (LLM sometimes returns per-city dict or empty object)
+        if not isinstance(hotel, dict) or "name" not in hotel:
+            hotel = {
+                "name": "N/A", "address": "", "price_per_night": 0.0,
+                "rating": 0.0, "amenities": [], "total_price": 0.0,
+            }
+
+        # Normalize weather_summary (LLM sometimes returns a per-city dict)
+        weather_summary = data.get("weather_summary", "")
+        if isinstance(weather_summary, dict):
+            weather_summary = " | ".join(str(v) for v in weather_summary.values())
 
         if "total_price" not in hotel:
             nights = len(daily_plan) or 1
@@ -249,8 +278,10 @@ class SelfCritiqueStrategy(BaseStrategy):
         if score is not None:
             summary = f"[Critique score: {score}/10] {summary}"
 
+        flight = data.get("selected_flight", {})
+
         return ItineraryResult(
-            destination=data.get("destination", "unknown"),
+            destination=destination,
             travel_dates=(
                 data.get("start_date", ""),
                 data.get("end_date", ""),
@@ -258,7 +289,7 @@ class SelfCritiqueStrategy(BaseStrategy):
             flights=[flight] if flight else [],
             hotel=hotel,
             daily_plan=daily_plan,
-            weather_summary=data.get("weather_summary", ""),
+            weather_summary=weather_summary,
             total_estimated_cost=data.get("total_estimated_cost", 0),
             natural_language_summary=summary,
             strategy_used=self.strategy_name,

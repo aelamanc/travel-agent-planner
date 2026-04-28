@@ -1,4 +1,4 @@
-"""Flight search tool — mock data + Amadeus API live mode."""
+"""Flight search tool — mock data + SerpAPI Google Flights live mode."""
 
 import os
 from typing import Any
@@ -230,74 +230,54 @@ class SearchFlightsTool(BaseTool):
 
         return {"flights": results, "count": len(results)}
 
-    # ── Live (Amadeus API) ───────────────────────────────────────────
-
-    def _get_amadeus_token(self) -> str:
-        """Authenticate with Amadeus and return an access token."""
-        resp = requests.post(
-            "https://test.api.amadeus.com/v1/security/oauth2/token",
-            data={
-                "grant_type": "client_credentials",
-                "client_id": os.environ["AMADEUS_API_KEY"],
-                "client_secret": os.environ["AMADEUS_API_SECRET"],
-            },
-        )
-        resp.raise_for_status()
-        return resp.json()["access_token"]
+    # ── Live (SerpAPI Google Flights) ───────────────────────────────
 
     def _run_live(self, **kwargs: Any) -> dict:
-        token = self._get_amadeus_token()
-
         origin_code = _to_iata(kwargs["origin"])
         dest_code = _to_iata(kwargs["destination"])
         date = kwargs["date"]
         max_price = kwargs.get("max_price")
 
         params = {
-            "originLocationCode": origin_code,
-            "destinationLocationCode": dest_code,
-            "departureDate": date,
-            "adults": 1,
-            "max": 5,
-            "currencyCode": "USD",
+            "engine": "google_flights",
+            "departure_id": origin_code,
+            "arrival_id": dest_code,
+            "outbound_date": date,
+            "type": "2",        # one-way
+            "travel_class": "1",  # economy
+            "adults": "1",
+            "currency": "USD",
+            "api_key": os.environ["SERPAPI_KEY"],
         }
         if max_price is not None:
-            params["maxPrice"] = int(max_price)
+            params["max_price"] = int(max_price)
 
-        resp = requests.get(
-            "https://test.api.amadeus.com/v2/shopping/flight-offers",
-            headers={"Authorization": f"Bearer {token}"},
-            params=params,
-        )
+        resp = requests.get("https://serpapi.com/search", params=params)
         resp.raise_for_status()
-        data = resp.json().get("data", [])
+        data = resp.json()
+
+        # best_flights are top picks; other_flights are the rest
+        raw_flights = data.get("best_flights", []) + data.get("other_flights", [])
 
         results = []
-        for offer in data:
-            seg = offer["itineraries"][0]["segments"]
-            first_seg = seg[0]
-            last_seg = seg[-1]
+        for option in raw_flights[:5]:
+            segments = option.get("flights", [])
+            if not segments:
+                continue
 
-            # Parse duration like "PT7H25M"
-            duration_str = offer["itineraries"][0]["duration"]
-            hours = 0.0
-            if "H" in duration_str:
-                hours += int(duration_str.split("PT")[1].split("H")[0])
-            if "M" in duration_str:
-                mins_part = duration_str.split("H")[-1] if "H" in duration_str else duration_str.split("PT")[1]
-                if "M" in mins_part:
-                    hours += int(mins_part.replace("M", "")) / 60
+            first = segments[0]
+            last = segments[-1]
 
             results.append({
-                "airline": first_seg["carrierCode"],
-                "flight_number": first_seg["carrierCode"] + first_seg["number"],
-                "origin": first_seg["departure"]["iataCode"],
-                "destination": last_seg["arrival"]["iataCode"],
-                "departure_time": first_seg["departure"]["at"],
-                "arrival_time": last_seg["arrival"]["at"],
-                "price": float(offer["price"]["total"]),
-                "duration_hours": round(hours, 2),
-                "stops": len(seg) - 1,
+                "airline": first.get("airline", ""),
+                "flight_number": first.get("flight_number", ""),
+                "origin": first["departure_airport"]["id"],
+                "destination": last["arrival_airport"]["id"],
+                "departure_time": first["departure_airport"]["time"],
+                "arrival_time": last["arrival_airport"]["time"],
+                "price": float(option.get("price", 0)),
+                "duration_hours": round(option.get("total_duration", 0) / 60, 2),
+                "stops": len(option.get("layovers", [])),
             })
 
         return {"flights": results, "count": len(results)}

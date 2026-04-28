@@ -1,4 +1,4 @@
-"""Attractions tool — mock data + Google Places API live mode."""
+"""Attractions tool — mock data + Geoapify Places API live mode."""
 
 import os
 from typing import Any
@@ -46,28 +46,31 @@ DEFAULT_ATTRACTIONS = [
     {"name": "National Museum", "category": "museum", "rating": 4.4, "price": 15.0, "description": "Major museum showcasing national art and history.", "duration_hours": 2.5},
 ]
 
-# Foursquare category IDs mapped to our labels
-FSQ_CATEGORY_MAP = {
-    10000: "museum",
-    10027: "museum",
-    10004: "landmark",
-    16000: "landmark",
-    16032: "park",
-    13000: "food",
-    17000: "shopping",
-    19000: "tour",
+# Geoapify category strings mapped to our labels
+GEOAPIFY_CATEGORY_MAP = {
+    "entertainment.museum": "museum",
+    "tourism.attraction": "landmark",
+    "tourism.sights": "landmark",
+    "leisure.park": "park",
+    "natural": "park",
+    "catering.restaurant": "food",
+    "catering.cafe": "food",
+    "commercial.shopping_mall": "shopping",
+    "commercial.marketplace": "shopping",
 }
 
-# Map preference categories to Foursquare category IDs
-PREF_TO_FSQ_CATEGORY = {
-    "museum": "10027",
-    "landmark": "16000",
-    "food": "13000",
-    "park": "16032",
-    "shopping": "17000",
-    "tour": "19000",
-    "neighborhood": "16000",
+# Map preference categories to Geoapify category strings
+PREF_TO_GEOAPIFY = {
+    "museum": "entertainment.museum",
+    "landmark": "tourism.attraction,tourism.sights",
+    "food": "catering.restaurant,catering.cafe",
+    "park": "leisure.park",
+    "shopping": "commercial.shopping_mall,commercial.marketplace",
+    "tour": "tourism.sights",
+    "neighborhood": "tourism.attraction",
 }
+
+DEFAULT_GEOAPIFY_CATEGORIES = "tourism.attraction,entertainment.museum,tourism.sights,leisure.park"
 
 
 def _normalize(destination: str) -> str:
@@ -129,78 +132,81 @@ class GetAttractionsTool(BaseTool):
 
         return {"attractions": attractions, "count": len(attractions)}
 
-    # ── Live (Foursquare Places API) ─────────────────────────────────
-    # Uses the new places-api.foursquare.com domain (post-2025 migration)
+    # ── Live (Geoapify Places API) ────────────────────────────────────
 
     def _run_live(self, **kwargs: Any) -> dict:
         destination = kwargs["destination"]
         preferences = kwargs.get("preferences", [])
-        api_key = os.environ["FOURSQUARE_API_KEY"]
+        api_key = os.environ["GEOAPIFY_API_KEY"]
 
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Accept": "application/json",
-            "X-Places-Api-Version": "2025-06-17",
-        }
-
-        # Build category filter from preferences
-        if preferences:
-            category_ids = []
-            for pref in preferences:
-                cat_id = PREF_TO_FSQ_CATEGORY.get(pref.lower())
-                if cat_id and cat_id not in category_ids:
-                    category_ids.append(cat_id)
-            categories_param = ",".join(category_ids) if category_ids else None
-        else:
-            categories_param = None
-
-        params = {
-            "near": destination,
-            "limit": 15,
-            "sort": "POPULARITY",
-        }
-        if categories_param:
-            params["fsq_category_ids"] = categories_param
-
-        resp = requests.get(
-            "https://places-api.foursquare.com/places/search",
-            headers=headers,
-            params=params,
+        # Step 1: Geocode the city to get coordinates
+        geo_resp = requests.get(
+            "https://api.geoapify.com/v1/geocode/search",
+            params={"text": destination, "type": "city", "limit": 1, "apiKey": api_key},
         )
-        resp.raise_for_status()
+        geo_resp.raise_for_status()
+        geo_features = geo_resp.json().get("features", [])
+        if not geo_features:
+            return self._run_mock(**kwargs)
+
+        coords = geo_features[0]["geometry"]["coordinates"]  # [lon, lat]
+        lon, lat = coords[0], coords[1]
+
+        # Step 2: Build category filter
+        if preferences:
+            cats = set()
+            for pref in preferences:
+                mapped = PREF_TO_GEOAPIFY.get(pref.lower(), "tourism.attraction")
+                cats.update(mapped.split(","))
+            categories = ",".join(cats)
+        else:
+            categories = DEFAULT_GEOAPIFY_CATEGORIES
+
+        # Step 3: Fetch places within 10km of city center
+        # Build URL manually — requests encodes commas/colons which Geoapify rejects
+        places_url = (
+            f"https://api.geoapify.com/v2/places"
+            f"?categories={categories}"
+            f"&filter=circle:{lon},{lat},10000"
+            f"&limit=15"
+            f"&apiKey={api_key}"
+        )
+        places_resp = requests.get(places_url)
+        places_resp.raise_for_status()
 
         results = []
-        seen_names = set()
-
-        for place in resp.json().get("results", []):
-            name = place.get("name", "Unknown")
-            if name in seen_names:
+        seen = set()
+        for feature in places_resp.json().get("features", []):
+            props = feature.get("properties", {})
+            name = props.get("name", "").strip()
+            if not name or name in seen:
                 continue
-            seen_names.add(name)
+            seen.add(name)
 
+            # Map first Geoapify category to our label
+            raw_cats = props.get("categories", [])
             category = "landmark"
-            for cat in place.get("categories", []):
-                mapped = FSQ_CATEGORY_MAP.get(cat.get("id", 0))
-                if mapped:
-                    category = mapped
-                    break
+            for raw_cat in raw_cats:
+                for key, label in GEOAPIFY_CATEGORY_MAP.items():
+                    if raw_cat.startswith(key):
+                        category = label
+                        break
+                else:
+                    continue
+                break
 
-            raw_rating = place.get("rating", 0) or 0
-            rating = round(raw_rating / 2, 1)
-
-            location = place.get("location", {})
-            address = location.get("formatted_address") or location.get("address", "")
+            address = props.get("address_line2", "") or props.get("address_line1", "")
 
             results.append({
                 "name": name,
                 "category": category,
-                "rating": rating,
+                "rating": 0.0,
                 "price": 0.0,
                 "description": address,
                 "duration_hours": 2.0,
             })
 
         if not results:
-            return {"attractions": DEFAULT_ATTRACTIONS, "count": len(DEFAULT_ATTRACTIONS)}
+            return self._run_mock(**kwargs)
 
         return {"attractions": results, "count": len(results)}
