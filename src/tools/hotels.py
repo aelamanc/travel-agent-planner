@@ -1,4 +1,4 @@
-"""Hotel search tool — mock data + Amadeus API live mode."""
+"""Hotel search tool — mock data + Booking.com (RapidAPI) live mode."""
 
 import os
 from datetime import date as dt_date
@@ -92,10 +92,18 @@ DEFAULT_HOTELS = [
     },
 ]
 
-# Amadeus city codes for hotel search
-CITY_CODES = {
-    "paris": "PAR", "tokyo": "TYO", "rome": "ROM",
-    "london": "LON", "new york": "NYC", "los angeles": "LAX",
+# Booking.com destination IDs for major cities (from searchDestination endpoint)
+DEST_IDS = {
+    "paris": "-1456928",
+    "tokyo": "-246227",
+    "rome": "-126693",
+    "london": "-2601889",
+    "new york": "20088325",
+    "los angeles": "20144463",
+    "chicago": "20033173",
+    "miami": "20014335",
+    "barcelona": "-372490",
+    "amsterdam": "-2140479",
 }
 
 
@@ -108,13 +116,27 @@ def _normalize(destination: str) -> str:
     return mapping.get(destination.lower().strip(), "default")
 
 
-def _to_city_code(destination: str) -> str:
+def _get_dest_id(destination: str, api_key: str) -> str | None:
+    """Look up Booking.com destination ID, using cache first then live search."""
     key = destination.lower().strip()
-    if key in CITY_CODES:
-        return CITY_CODES[key]
-    if len(destination.strip()) == 3 and destination.strip().isalpha():
-        return destination.strip().upper()
-    return destination.strip().upper()[:3]
+    if key in DEST_IDS:
+        return DEST_IDS[key]
+    # Fall back to live destination search for unknown cities
+    resp = requests.get(
+        "https://booking-com15.p.rapidapi.com/api/v1/hotels/searchDestination",
+        params={"query": destination},
+        headers={
+            "x-rapidapi-host": "booking-com15.p.rapidapi.com",
+            "x-rapidapi-key": api_key,
+        },
+    )
+    resp.raise_for_status()
+    data = resp.json().get("data", [])
+    # Prefer city-type result
+    for item in data:
+        if item.get("dest_type") == "city":
+            return str(item["dest_id"])
+    return str(data[0]["dest_id"]) if data else None
 
 
 class SearchHotelsTool(BaseTool):
@@ -183,80 +205,71 @@ class SearchHotelsTool(BaseTool):
 
         return {"hotels": results, "count": len(results)}
 
-    # ── Live (Amadeus API) ───────────────────────────────────────────
-
-    def _get_amadeus_token(self) -> str:
-        resp = requests.post(
-            "https://test.api.amadeus.com/v1/security/oauth2/token",
-            data={
-                "grant_type": "client_credentials",
-                "client_id": os.environ["AMADEUS_API_KEY"],
-                "client_secret": os.environ["AMADEUS_API_SECRET"],
-            },
-        )
-        resp.raise_for_status()
-        return resp.json()["access_token"]
+    # ── Live (Booking.com via RapidAPI) ─────────────────────────────
 
     def _run_live(self, **kwargs: Any) -> dict:
-        token = self._get_amadeus_token()
-
         destination = kwargs["destination"]
         check_in = kwargs["check_in"]
         check_out = kwargs["check_out"]
         max_price = kwargs.get("max_price_per_night")
+        api_key = os.environ["RAPIDAPI_KEY"]
 
         ci = dt_date.fromisoformat(check_in)
         co = dt_date.fromisoformat(check_out)
         nights = max((co - ci).days, 1)
 
-        city_code = _to_city_code(destination)
+        headers = {
+            "x-rapidapi-host": "booking-com15.p.rapidapi.com",
+            "x-rapidapi-key": api_key,
+        }
 
-        # Step 1: Get hotel IDs by city
+        dest_id = _get_dest_id(destination, api_key)
+        if not dest_id:
+            return self._run_mock(**kwargs)
+
         resp = requests.get(
-            "https://test.api.amadeus.com/v1/reference-data/locations/hotels/by-city",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"cityCode": city_code, "radius": 10, "radiusUnit": "KM"},
-        )
-        resp.raise_for_status()
-        hotel_ids = [h["hotelId"] for h in resp.json().get("data", [])][:10]
-
-        if not hotel_ids:
-            return {"hotels": [], "count": 0}
-
-        # Step 2: Get offers for those hotels
-        resp = requests.get(
-            "https://test.api.amadeus.com/v3/shopping/hotel-offers",
-            headers={"Authorization": f"Bearer {token}"},
+            "https://booking-com15.p.rapidapi.com/api/v1/hotels/searchHotels",
+            headers=headers,
             params={
-                "hotelIds": ",".join(hotel_ids),
-                "checkInDate": check_in,
-                "checkOutDate": check_out,
+                "dest_id": dest_id,
+                "search_type": "city",
+                "arrival_date": check_in,
+                "departure_date": check_out,
                 "adults": 1,
-                "currency": "USD",
+                "room_qty": 1,
+                "currency_code": "USD",
+                "languagecode": "en-us",
+                "page_number": 1,
             },
         )
         resp.raise_for_status()
 
         results = []
-        for hotel_data in resp.json().get("data", []):
-            hotel_info = hotel_data.get("hotel", {})
-            offer = hotel_data.get("offers", [{}])[0]
-            price_total = float(offer.get("price", {}).get("total", 0))
-            ppn = round(price_total / nights, 2) if nights > 0 else price_total
+        for hotel in resp.json().get("data", {}).get("hotels", []):
+            prop = hotel.get("property", {})
+            name = prop.get("name", "Unknown Hotel")
+            review_score = float(prop.get("reviewScore") or 0) / 2  # convert 10→5 scale
+            total_price = float(
+                prop.get("priceBreakdown", {}).get("grossPrice", {}).get("value", 0)
+            )
+            ppn = round(total_price / nights, 2) if nights > 0 else total_price
 
             if max_price is not None and ppn > max_price:
                 continue
 
             results.append({
-                "name": hotel_info.get("name", "Unknown Hotel"),
-                "address": hotel_info.get("address", {}).get("lines", [""])[0],
+                "name": name,
+                "address": f"{prop.get('wishlistName', '')}, {destination}".strip(", "),
                 "price_per_night": ppn,
-                "rating": float(hotel_info.get("rating", 0)),
-                "amenities": hotel_data.get("amenities", []),
+                "rating": round(review_score, 1),
+                "amenities": [],
                 "check_in": check_in,
                 "check_out": check_out,
                 "nights": nights,
-                "total_price": price_total,
+                "total_price": round(total_price, 2),
             })
+
+        if not results:
+            return self._run_mock(**kwargs)
 
         return {"hotels": results[:5], "count": min(len(results), 5)}

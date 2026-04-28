@@ -23,6 +23,7 @@ To use real APIs instead of mock data, add these keys to your `.env`:
 
 ```
 SERPAPI_KEY=...              # flights (Google Flights via SerpAPI, 250 searches/month free)
+RAPIDAPI_KEY=...             # hotels (Booking.com via RapidAPI, 500 requests/month free)
 OPENWEATHER_API_KEY=...      # weather (free tier, 1000 calls/day)
 GEOAPIFY_API_KEY=...         # attractions (Geoapify Places, 3000 credits/day free)
 ```
@@ -59,7 +60,7 @@ Each tool supports two modes: `mock` (hardcoded data) and `live` (real API calls
 | Tool | Mock Data | Live API |
 |---|---|---|
 | `search_flights` | Hardcoded flights for Paris/Tokyo/Rome | SerpAPI Google Flights |
-| `search_hotels` | Hardcoded hotels for Paris/Tokyo/Rome | Amadeus Hotel Search |
+| `search_hotels` | Hardcoded hotels for Paris/Tokyo/Rome | Booking.com via RapidAPI |
 | `get_weather` | Hardcoded 7-day forecasts | OpenWeatherMap 5-day forecast |
 | `get_attractions` | Hardcoded attractions with categories | Geoapify Places API |
 

@@ -35,7 +35,7 @@ def main():
     parser.add_argument(
         "--query",
         default=(
-            "Plan a 5-day trip to Paris from New York (JFK), June 15-20, 2025. "
+            "Plan a 5-day trip to Paris from New York (JFK), June 15-20, 2026. "
             "My budget is $2000 total. I love museums and food."
         ),
         help="Travel request to plan. If omitted, a Paris sample query is used.",

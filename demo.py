@@ -31,7 +31,7 @@ def main():
 
     if not query:
         query = (
-            "Plan a 5-day trip to Paris from JFK, June 15-20. "
+            "Plan a 5-day trip to Paris from JFK, June 15-20, 2026. "
             "Budget $2000 total. I love museums and food."
         )
         print(f"Using default query: {query}")

@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 results/*.csv
 results/*.png
+results/*.json
 .venv/
 .DS_Store
 CLAUDE.md
