@@ -46,28 +46,27 @@ DEFAULT_ATTRACTIONS = [
     {"name": "National Museum", "category": "museum", "rating": 4.4, "price": 15.0, "description": "Major museum showcasing national art and history.", "duration_hours": 2.5},
 ]
 
-# Map Google Places types to our category labels
-PLACES_TYPE_TO_CATEGORY = {
-    "museum": "museum",
-    "art_gallery": "museum",
-    "tourist_attraction": "landmark",
-    "church": "landmark",
-    "park": "park",
-    "restaurant": "food",
-    "cafe": "food",
-    "shopping_mall": "shopping",
-    "store": "shopping",
+# Foursquare category IDs mapped to our labels
+FSQ_CATEGORY_MAP = {
+    10000: "museum",
+    10027: "museum",
+    10004: "landmark",
+    16000: "landmark",
+    16032: "park",
+    13000: "food",
+    17000: "shopping",
+    19000: "tour",
 }
 
-# Map preference categories to Google Places types for search
-PREF_TO_PLACES_TYPE = {
-    "museum": "museum",
-    "landmark": "tourist_attraction",
-    "food": "restaurant",
-    "park": "park",
-    "shopping": "shopping_mall",
-    "tour": "tourist_attraction",
-    "neighborhood": "tourist_attraction",
+# Map preference categories to Foursquare category IDs
+PREF_TO_FSQ_CATEGORY = {
+    "museum": "10027",
+    "landmark": "16000",
+    "food": "13000",
+    "park": "16032",
+    "shopping": "17000",
+    "tour": "19000",
+    "neighborhood": "16000",
 }
 
 
@@ -130,60 +129,78 @@ class GetAttractionsTool(BaseTool):
 
         return {"attractions": attractions, "count": len(attractions)}
 
-    # ── Live (Google Places API) ─────────────────────────────────────
+    # ── Live (Foursquare Places API) ─────────────────────────────────
+    # Uses the new places-api.foursquare.com domain (post-2025 migration)
 
     def _run_live(self, **kwargs: Any) -> dict:
         destination = kwargs["destination"]
         preferences = kwargs.get("preferences", [])
-        api_key = os.environ["GOOGLE_PLACES_API_KEY"]
+        api_key = os.environ["FOURSQUARE_API_KEY"]
 
-        # Determine which place types to search
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            "X-Places-Api-Version": "2025-06-17",
+        }
+
+        # Build category filter from preferences
         if preferences:
-            place_types = []
+            category_ids = []
             for pref in preferences:
-                mapped = PREF_TO_PLACES_TYPE.get(pref.lower(), "tourist_attraction")
-                if mapped not in place_types:
-                    place_types.append(mapped)
+                cat_id = PREF_TO_FSQ_CATEGORY.get(pref.lower())
+                if cat_id and cat_id not in category_ids:
+                    category_ids.append(cat_id)
+            categories_param = ",".join(category_ids) if category_ids else None
         else:
-            place_types = ["tourist_attraction"]
+            categories_param = None
 
-        all_results = []
+        params = {
+            "near": destination,
+            "limit": 15,
+            "sort": "POPULARITY",
+        }
+        if categories_param:
+            params["fsq_category_ids"] = categories_param
+
+        resp = requests.get(
+            "https://places-api.foursquare.com/places/search",
+            headers=headers,
+            params=params,
+        )
+        resp.raise_for_status()
+
+        results = []
         seen_names = set()
 
-        for place_type in place_types:
-            resp = requests.get(
-                "https://maps.googleapis.com/maps/api/place/textsearch/json",
-                params={
-                    "query": f"{place_type} in {destination}",
-                    "type": place_type,
-                    "key": api_key,
-                },
-            )
-            resp.raise_for_status()
+        for place in resp.json().get("results", []):
+            name = place.get("name", "Unknown")
+            if name in seen_names:
+                continue
+            seen_names.add(name)
 
-            for place in resp.json().get("results", [])[:5]:
-                name = place.get("name", "Unknown")
-                if name in seen_names:
-                    continue
-                seen_names.add(name)
+            category = "landmark"
+            for cat in place.get("categories", []):
+                mapped = FSQ_CATEGORY_MAP.get(cat.get("id", 0))
+                if mapped:
+                    category = mapped
+                    break
 
-                # Map the first matching type to our category
-                category = "landmark"
-                for t in place.get("types", []):
-                    if t in PLACES_TYPE_TO_CATEGORY:
-                        category = PLACES_TYPE_TO_CATEGORY[t]
-                        break
+            raw_rating = place.get("rating", 0) or 0
+            rating = round(raw_rating / 2, 1)
 
-                all_results.append({
-                    "name": name,
-                    "category": category,
-                    "rating": place.get("rating", 0.0),
-                    "price": 0.0,  # Places API doesn't give ticket prices
-                    "description": place.get("formatted_address", ""),
-                    "duration_hours": 2.0,  # Default estimate
-                })
+            location = place.get("location", {})
+            address = location.get("formatted_address") or location.get("address", "")
 
-        if not all_results:
+            results.append({
+                "name": name,
+                "category": category,
+                "rating": rating,
+                "price": 0.0,
+                "description": address,
+                "duration_hours": 2.0,
+            })
+
+        if not results:
             return {"attractions": DEFAULT_ATTRACTIONS, "count": len(DEFAULT_ATTRACTIONS)}
 
-        return {"attractions": all_results, "count": len(all_results)}
+        return {"attractions": results, "count": len(results)}

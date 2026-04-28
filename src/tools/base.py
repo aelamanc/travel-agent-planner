@@ -33,7 +33,13 @@ class BaseTool(ABC):
     def run(self, **kwargs: Any) -> dict:
         """Execute the tool — dispatches to mock or live implementation."""
         if self.mode == "live":
-            return self._run_live(**kwargs)
+            try:
+                return self._run_live(**kwargs)
+            except Exception as e:
+                result = self._run_mock(**kwargs)
+                result["mode"] = "mock_fallback"
+                result["live_error"] = f"{type(e).__name__}: {e}"
+                return result
         return self._run_mock(**kwargs)
 
     @abstractmethod

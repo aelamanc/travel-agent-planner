@@ -9,39 +9,80 @@ from ..models import ItineraryResult
 from ..tools.base import BaseTool
 from .base import BaseStrategy
 
-# TODO: Define PLANNING_SYSTEM_PROMPT — instruct the LLM to output a JSON plan
-#       listing tool calls in order: [{"tool": "search_flights", "args": {...}}, ...]
 PLANNING_SYSTEM_PROMPT = """\
 You are a travel planning assistant. Given a user's travel request, produce a \
-step-by-step plan of tool calls needed to gather all information for a complete \
-itinerary. Output ONLY a JSON array of steps, each with "tool" and "args" keys.
+step-by-step plan of exactly which tool calls to make to gather all information \
+needed for a complete itinerary.
 
-Available tools and their parameters:
-- search_flights: origin, destination, date, max_price (optional)
-- search_hotels: destination, check_in, check_out, max_price_per_night (optional)
-- get_weather: destination, start_date, end_date
-- get_attractions: destination, preferences (optional list)
+Output ONLY a valid JSON object with a "steps" array. Each step must have "tool" and "args" keys.
+Do not include any explanation or markdown — only the raw JSON object.
+
+Available tools:
+- search_flights: required: origin (str), destination (str), date (str YYYY-MM-DD); optional: max_price (number)
+- search_hotels: required: destination (str), check_in (str YYYY-MM-DD), check_out (str YYYY-MM-DD); optional: max_price_per_night (number)
+- get_weather: required: destination (str), start_date (str YYYY-MM-DD), end_date (str YYYY-MM-DD)
+- get_attractions: required: destination (str); optional: preferences (array of strings)
+
+Rules:
+- Always include all four tools.
+- Extract dates, origin, budget, and preferences from the user query.
+- If origin is not mentioned, default to "JFK".
+- If budget is mentioned, pass it as max_price / max_price_per_night.
+- For preferences, infer from the query (e.g. "museums" → ["museum"], "food lover" → ["food"]).
 
 Example output:
-[
-  {"tool": "search_flights", "args": {"origin": "JFK", "destination": "Paris", "date": "2025-06-15"}},
-  {"tool": "search_hotels", "args": {"destination": "Paris", "check_in": "2025-06-15", "check_out": "2025-06-20"}},
-  ...
-]
+{
+  "steps": [
+    {"tool": "search_flights", "args": {"origin": "JFK", "destination": "Paris", "date": "2025-06-15", "max_price": 500}},
+    {"tool": "search_hotels", "args": {"destination": "Paris", "check_in": "2025-06-15", "check_out": "2025-06-20", "max_price_per_night": 150}},
+    {"tool": "get_weather", "args": {"destination": "Paris", "start_date": "2025-06-15", "end_date": "2025-06-20"}},
+    {"tool": "get_attractions", "args": {"destination": "Paris", "preferences": ["museum", "food"]}}
+  ]
+}
 """
 
-# TODO: Define SYNTHESIS_SYSTEM_PROMPT — instruct the LLM to combine all tool
-#       results into a final itinerary JSON matching the ItineraryResult schema.
 SYNTHESIS_SYSTEM_PROMPT = """\
-You are a travel planning assistant. You have been given the results of several \
-tool calls. Combine them into a complete travel itinerary. Return a JSON object with:
-- destination, start_date, end_date
-- selected_flight (best option), return_flight (if applicable)
-- selected_hotel (best option)
-- daily_plan (array of day objects with date, weather, attractions, meals, estimated_cost)
-- weather_summary
-- total_estimated_cost
-- natural_language_summary
+You are a travel planning assistant. You have executed a plan and collected results \
+from several tools. Using ALL of the tool results below, create a complete travel \
+itinerary.
+
+Return ONLY a valid JSON object (no markdown, no explanation) with these exact fields:
+{
+  "destination": "city name",
+  "start_date": "YYYY-MM-DD",
+  "end_date": "YYYY-MM-DD",
+  "selected_flight": {
+    "airline": "", "flight_number": "", "origin": "", "destination": "",
+    "departure_time": "", "arrival_time": "", "price": 0.0,
+    "duration_hours": 0.0, "stops": 0
+  },
+  "selected_hotel": {
+    "name": "", "address": "", "price_per_night": 0.0, "rating": 0.0,
+    "amenities": [], "total_price": 0.0
+  },
+  "daily_plan": [
+    {
+      "date": "YYYY-MM-DD",
+      "weather": "brief weather description",
+      "attractions": [
+        {"name": "", "category": "", "rating": 0.0, "price": 0.0, "description": "", "duration_hours": 0.0}
+      ],
+      "meals": ["Breakfast at ...", "Lunch at ...", "Dinner at ..."],
+      "estimated_cost": 0.0
+    }
+  ],
+  "weather_summary": "overall weather summary",
+  "total_estimated_cost": 0.0,
+  "natural_language_summary": "2-3 sentence overview of the trip"
+}
+
+Guidelines:
+- Pick the best flight and hotel given any budget constraints.
+- Build one day plan entry per day of the trip.
+- Distribute attractions across days (2-3 per day max).
+- estimated_cost per day = attraction costs + meals estimate.
+- total_estimated_cost = flight + hotel total + sum of daily costs.
+- Respect any stated budget — flag in natural_language_summary if over budget.
 """
 
 
@@ -58,24 +99,85 @@ class PlanExecuteStrategy(BaseStrategy):
         start_time = time.time()
         total_tokens = 0
 
-        # --- Phase 1: Generate plan ---
-        # TODO: Call self.client.chat.completions.create with PLANNING_SYSTEM_PROMPT
-        #       Parse the JSON array of tool calls from the response.
-        #       Track tokens in total_tokens.
-        plan = []  # TODO: replace with parsed plan
+        # ── Phase 1: Generate plan ────────────────────────────────────
+        plan_response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": PLANNING_SYSTEM_PROMPT},
+                {"role": "user", "content": query},
+            ],
+            response_format={"type": "json_object"},
+        )
+        total_tokens += plan_response.usage.total_tokens
+        raw_plan = json.loads(plan_response.choices[0].message.content)
 
-        # --- Phase 2: Execute plan ---
-        # TODO: Loop over the plan steps, calling self._execute_tool for each.
-        #       Collect results into a list of {"tool": ..., "args": ..., "result": ...}.
-        tool_results = []  # TODO: replace with actual results
+        # The model may return {"steps": [...]} or a bare array wrapped in a key
+        if isinstance(raw_plan, list):
+            plan = raw_plan
+        else:
+            # Find the first list value in the response object
+            plan = next(
+                (v for v in raw_plan.values() if isinstance(v, list)), []
+            )
 
-        # --- Phase 3: Synthesize itinerary ---
-        # TODO: Call self.client.chat.completions.create with SYNTHESIS_SYSTEM_PROMPT,
-        #       passing tool_results as context.
-        #       Parse the JSON response into an ItineraryResult.
-        #       Track tokens in total_tokens.
+        # ── Phase 2: Execute plan ─────────────────────────────────────
+        tool_results = []
+        for step in plan:
+            tool_name = step.get("tool", "")
+            tool_args = step.get("args", {})
+            result = self._execute_tool(tool_name, tool_args)
+            tool_results.append({
+                "tool": tool_name,
+                "args": tool_args,
+                "result": result,
+            })
+
+        # ── Phase 3: Synthesize itinerary ─────────────────────────────
+        tool_context = json.dumps(tool_results, indent=2)
+        synthesis_response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": SYNTHESIS_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Original request: {query}\n\n"
+                        f"Tool results:\n{tool_context}"
+                    ),
+                },
+            ],
+            response_format={"type": "json_object"},
+        )
+        total_tokens += synthesis_response.usage.total_tokens
+        data = json.loads(synthesis_response.choices[0].message.content)
 
         latency = time.time() - start_time
+        return self._build_result(data, total_tokens, latency)
 
-        # TODO: Return a real ItineraryResult built from the synthesis response.
-        raise NotImplementedError("PlanExecuteStrategy.run() not yet implemented")
+    def _build_result(
+        self, data: dict, tokens: int, latency: float
+    ) -> ItineraryResult:
+        flight = data.get("selected_flight", {})
+        hotel = data.get("selected_hotel", {})
+        daily_plan = data.get("daily_plan", [])
+
+        if "total_price" not in hotel:
+            nights = len(daily_plan) or 1
+            hotel["total_price"] = hotel.get("price_per_night", 0) * nights
+
+        return ItineraryResult(
+            destination=data.get("destination", "unknown"),
+            travel_dates=(
+                data.get("start_date", ""),
+                data.get("end_date", ""),
+            ),
+            flights=[flight] if flight else [],
+            hotel=hotel,
+            daily_plan=daily_plan,
+            weather_summary=data.get("weather_summary", ""),
+            total_estimated_cost=data.get("total_estimated_cost", 0),
+            natural_language_summary=data.get("natural_language_summary", ""),
+            strategy_used=self.strategy_name,
+            tokens_used=tokens,
+            latency_seconds=round(latency, 2),
+        )

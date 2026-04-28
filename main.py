@@ -1,39 +1,79 @@
-"""Entrypoint: run a single example query through the ReAct strategy."""
+"""Entrypoint: run a single travel planning query through a chosen strategy."""
 
 import argparse
 import json
+import os
+import sys
 
 from dotenv import load_dotenv
+from openai import OpenAIError
 
 load_dotenv()
 
 from src.tools import create_tool_registry
 from src.strategies.react import ReActStrategy
+from src.strategies.plan_execute import PlanExecuteStrategy
+from src.strategies.self_critique import SelfCritiqueStrategy
+from src.baseline import ZeroShotBaseline
 
 
 def main():
     parser = argparse.ArgumentParser(description="Run a travel planning query")
     parser.add_argument(
         "--mode", choices=["mock", "live"], default="mock",
-        help="Tool data mode: 'mock' for hardcoded data, 'live' for real APIs (default: mock)",
+        help="Tool data mode: 'mock' or 'live' (default: mock)",
+    )
+    parser.add_argument(
+        "--strategy", choices=["react", "plan", "critique", "baseline"],
+        default="react",
+        help="Reasoning strategy to use (default: react)",
+    )
+    parser.add_argument(
+        "--model", default="gpt-4o",
+        help="OpenAI model to use (default: gpt-4o)",
+    )
+    parser.add_argument(
+        "--query",
+        default=(
+            "Plan a 5-day trip to Paris from New York (JFK), June 15-20, 2025. "
+            "My budget is $2000 total. I love museums and food."
+        ),
+        help="Travel request to plan. If omitted, a Paris sample query is used.",
     )
     args = parser.parse_args()
 
-    tools = create_tool_registry(mode=args.mode)
-    strategy = ReActStrategy(tools=tools, model="gpt-4o")
+    if not os.getenv("OPENAI_API_KEY"):
+        print(
+            "Missing OPENAI_API_KEY. Copy .env.example to .env and add an OpenAI API key.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-    query = (
-        "Plan a 5-day trip to Paris from New York (JFK), June 15-20, 2025. "
-        "My budget is $2000 total. I love museums and food."
-    )
+    tools = create_tool_registry(mode=args.mode)
+
+    strategies = {
+        "react": ReActStrategy(tools=tools, model=args.model),
+        "plan": PlanExecuteStrategy(tools=tools, model=args.model),
+        "critique": SelfCritiqueStrategy(tools=tools, model=args.model),
+        "baseline": ZeroShotBaseline(model=args.model),
+    }
+    strategy = strategies[args.strategy]
+    query = args.query
 
     print(f"Query: {query}\n")
     print(f"Strategy: {strategy.strategy_name}")
     print(f"Mode: {args.mode}")
-    print(f"Tools: {[t.name for t in tools]}")
     print("-" * 60)
 
-    result = strategy.run(query)
+    try:
+        result = strategy.run(query)
+    except OpenAIError as e:
+        print(f"\nOpenAI API request failed: {e}", file=sys.stderr)
+        print(
+            "Check your OPENAI_API_KEY, network access, account billing, and model access.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     print(f"\nDestination: {result.destination}")
     print(f"Dates: {result.travel_dates[0]} to {result.travel_dates[1]}")
@@ -61,7 +101,7 @@ def main():
     print(f"\n{'='*60}")
     print(result.natural_language_summary)
 
-    # Also dump full JSON for inspection
+    os.makedirs("results", exist_ok=True)
     with open("results/last_run.json", "w") as f:
         json.dump(result.model_dump(), f, indent=2)
     print("\nFull result saved to results/last_run.json")

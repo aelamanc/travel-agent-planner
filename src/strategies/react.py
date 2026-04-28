@@ -160,17 +160,14 @@ class ReActStrategy(BaseStrategy):
                 model=self.model,
                 messages=messages,
                 tools=openai_tools,
-                tool_choice="auto",
+                tool_choice="required",  # always call a tool; prevents plain-text non-action responses
             )
 
             msg = response.choices[0].message
             total_tokens += response.usage.total_tokens
 
-            # Append assistant message to conversation
             messages.append(msg)
 
-            # If no tool calls, the model is done talking (shouldn't happen
-            # before finish_itinerary, but handle gracefully)
             if not msg.tool_calls:
                 break
 

@@ -3,6 +3,24 @@
 from ..models import ItineraryResult
 
 
+def _result_search_text(result: ItineraryResult) -> str:
+    """Flatten user-facing result fields for simple constraint checks."""
+    parts = [
+        result.destination,
+        result.weather_summary,
+        result.natural_language_summary,
+    ]
+    for day in result.daily_plan:
+        parts.extend([day.date, day.weather, " ".join(day.meals)])
+        for attraction in day.attractions:
+            parts.extend([
+                attraction.name,
+                attraction.category,
+                attraction.description,
+            ])
+    return " ".join(parts).lower()
+
+
 def goal_completion_score(result: ItineraryResult, expected_fields: list[str]) -> float:
     """Score 0-1: what fraction of expected fields are present and non-empty."""
     if not expected_fields:
@@ -36,6 +54,12 @@ def constraint_satisfaction_score(result: ItineraryResult, constraints: dict) ->
     if "max_hotel_per_night" in constraints:
         checks.append(
             result.hotel.price_per_night <= constraints["max_hotel_per_night"]
+        )
+
+    if "cities" in constraints:
+        text = _result_search_text(result)
+        checks.append(
+            all(city.lower() in text for city in constraints["cities"])
         )
 
     # Preference checks — just verify daily_plan has attractions matching categories
