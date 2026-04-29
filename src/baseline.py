@@ -14,6 +14,7 @@ complete travel itinerary as a JSON object with the following fields:
 - start_date (string YYYY-MM-DD)
 - end_date (string YYYY-MM-DD)
 - selected_flight (object with: airline, flight_number, origin, destination, departure_time, arrival_time, price, duration_hours, stops)
+- return_flight (same fields as selected_flight but for the return journey on the end date)
 - selected_hotel (object with: name, address, price_per_night, rating, amenities, total_price)
 - daily_plan (array of objects, each with: date, weather, attractions (array of objects with name, category, rating, price, description, duration_hours), meals (array of strings), estimated_cost)
 - weather_summary (string)
@@ -51,6 +52,7 @@ class ZeroShotBaseline:
 
         # Normalize the response into ItineraryResult
         flight = raw.get("selected_flight", {})
+        return_flight = raw.get("return_flight")
         hotel = raw.get("selected_hotel", {})
         daily_plan = raw.get("daily_plan", [])
 
@@ -58,13 +60,17 @@ class ZeroShotBaseline:
             nights = len(daily_plan) or 1
             hotel["total_price"] = hotel.get("price_per_night", 0) * nights
 
+        flights = [flight] if flight else []
+        if return_flight:
+            flights.append(return_flight)
+
         return ItineraryResult(
             destination=raw.get("destination", "unknown"),
             travel_dates=(
                 raw.get("start_date", ""),
                 raw.get("end_date", ""),
             ),
-            flights=[flight] if flight else [],
+            flights=flights,
             hotel=hotel,
             daily_plan=daily_plan,
             weather_summary=raw.get("weather_summary", ""),

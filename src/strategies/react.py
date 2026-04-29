@@ -23,7 +23,8 @@ with the complete itinerary data.
 
 Important guidelines:
 - Always search for flights, hotels, weather, AND attractions before finishing.
-- Respect any budget constraints the user mentions.
+- Always search for BOTH the outbound flight (origin→destination) AND the return flight (destination→origin on the end date).
+- Respect any budget constraints the user mentions — total cost includes outbound + return flight.
 - Pick the best flight and hotel based on the user's preferences and constraints.
 - Create a day-by-day plan using the attractions and weather data.
 - Include estimated costs for each day.
@@ -122,6 +123,7 @@ FINISH_TOOL = {
                 "start_date",
                 "end_date",
                 "selected_flight",
+                "return_flight",
                 "selected_hotel",
                 "daily_plan",
                 "weather_summary",

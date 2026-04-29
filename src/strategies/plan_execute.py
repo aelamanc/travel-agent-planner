@@ -24,16 +24,18 @@ Available tools:
 - get_attractions: required: destination (str); optional: preferences (array of strings)
 
 Rules:
-- Always include all four tools.
+- Always include all five steps: outbound flight, return flight, hotels, weather, attractions.
 - Extract dates, origin, budget, and preferences from the user query.
 - If origin is not mentioned, default to "JFK".
 - If budget is mentioned, pass it as max_price / max_price_per_night.
 - For preferences, infer from the query (e.g. "museums" → ["museum"], "food lover" → ["food"]).
+- The return flight swaps origin/destination and uses the end date.
 
 Example output:
 {
   "steps": [
     {"tool": "search_flights", "args": {"origin": "JFK", "destination": "Paris", "date": "2025-06-15", "max_price": 500}},
+    {"tool": "search_flights", "args": {"origin": "Paris", "destination": "JFK", "date": "2025-06-20", "max_price": 500}},
     {"tool": "search_hotels", "args": {"destination": "Paris", "check_in": "2025-06-15", "check_out": "2025-06-20", "max_price_per_night": 150}},
     {"tool": "get_weather", "args": {"destination": "Paris", "start_date": "2025-06-15", "end_date": "2025-06-20"}},
     {"tool": "get_attractions", "args": {"destination": "Paris", "preferences": ["museum", "food"]}}
@@ -52,6 +54,11 @@ Return ONLY a valid JSON object (no markdown, no explanation) with these exact f
   "start_date": "YYYY-MM-DD",
   "end_date": "YYYY-MM-DD",
   "selected_flight": {
+    "airline": "", "flight_number": "", "origin": "", "destination": "",
+    "departure_time": "", "arrival_time": "", "price": 0.0,
+    "duration_hours": 0.0, "stops": 0
+  },
+  "return_flight": {
     "airline": "", "flight_number": "", "origin": "", "destination": "",
     "departure_time": "", "arrival_time": "", "price": 0.0,
     "duration_hours": 0.0, "stops": 0
@@ -158,6 +165,7 @@ class PlanExecuteStrategy(BaseStrategy):
         self, data: dict, tokens: int, latency: float
     ) -> ItineraryResult:
         flight = data.get("selected_flight", {})
+        return_flight = data.get("return_flight")
         hotel = data.get("selected_hotel", {})
         daily_plan = data.get("daily_plan", [])
 
@@ -165,13 +173,17 @@ class PlanExecuteStrategy(BaseStrategy):
             nights = len(daily_plan) or 1
             hotel["total_price"] = hotel.get("price_per_night", 0) * nights
 
+        flights = [flight] if flight else []
+        if return_flight:
+            flights.append(return_flight)
+
         return ItineraryResult(
             destination=data.get("destination", "unknown"),
             travel_dates=(
                 data.get("start_date", ""),
                 data.get("end_date", ""),
             ),
-            flights=[flight] if flight else [],
+            flights=flights,
             hotel=hotel,
             daily_plan=daily_plan,
             weather_summary=data.get("weather_summary", ""),

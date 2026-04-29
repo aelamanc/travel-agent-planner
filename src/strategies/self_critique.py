@@ -22,6 +22,7 @@ request and return ONLY a valid JSON object (no markdown) with these fields:
   "max_hotel_per_night": null or number,
   "preferences": []  (list of categories from: museum, landmark, food, park, shopping, tour)
 }
+- end_date is also the return flight date.
 - Always return "destinations" as an array, even for a single city (e.g. ["Paris"]).
 - For multi-city trips list every city in order (e.g. ["Tokyo", "Rome"]).
 - If any date is not explicitly given, infer a reasonable near-future date.
@@ -41,6 +42,11 @@ Return ONLY a valid JSON object (no markdown) with these exact fields:
   "start_date": "YYYY-MM-DD",
   "end_date": "YYYY-MM-DD",
   "selected_flight": {
+    "airline": "", "flight_number": "", "origin": "", "destination": "",
+    "departure_time": "", "arrival_time": "", "price": 0.0,
+    "duration_hours": 0.0, "stops": 0
+  },
+  "return_flight": {
     "airline": "", "flight_number": "", "origin": "", "destination": "",
     "departure_time": "", "arrival_time": "", "price": 0.0,
     "duration_hours": 0.0, "stops": 0
@@ -157,8 +163,13 @@ class SelfCritiqueStrategy(BaseStrategy):
             if preferences:
                 attraction_args["preferences"] = preferences
 
+            return_args = {"origin": dest, "destination": origin, "date": end_date}
+            if max_flight_price:
+                return_args["max_price"] = max_flight_price
+
             tool_results[dest] = {
-                "flights": self._execute_tool("search_flights", flight_args),
+                "outbound_flights": self._execute_tool("search_flights", flight_args),
+                "return_flights": self._execute_tool("search_flights", return_args),
                 "hotels": self._execute_tool("search_hotels", hotel_args),
                 "weather": self._execute_tool(
                     "get_weather",
@@ -279,6 +290,10 @@ class SelfCritiqueStrategy(BaseStrategy):
             summary = f"[Critique score: {score}/10] {summary}"
 
         flight = data.get("selected_flight", {})
+        return_flight = data.get("return_flight")
+        flights = [flight] if flight else []
+        if return_flight:
+            flights.append(return_flight)
 
         return ItineraryResult(
             destination=destination,
@@ -286,7 +301,7 @@ class SelfCritiqueStrategy(BaseStrategy):
                 data.get("start_date", ""),
                 data.get("end_date", ""),
             ),
-            flights=[flight] if flight else [],
+            flights=flights,
             hotel=hotel,
             daily_plan=daily_plan,
             weather_summary=weather_summary,
