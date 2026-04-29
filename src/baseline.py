@@ -44,6 +44,7 @@ class ZeroShotBaseline:
                 {"role": "user", "content": query},
             ],
             response_format={"type": "json_object"},
+            seed=42,
         )
 
         total_tokens = response.usage.total_tokens

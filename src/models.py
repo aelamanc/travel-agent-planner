@@ -38,7 +38,7 @@ class HotelOption(BaseModel):
 
 class Attraction(BaseModel):
     name: str
-    category: str
+    category: str = ""
     rating: float = 0.0
     price: float = 0.0
     description: str = ""
@@ -56,6 +56,24 @@ class DayPlan(BaseModel):
     attractions: list[Attraction]
     meals: list[str]
     estimated_cost: float
+
+    @field_validator("attractions", mode="before")
+    @classmethod
+    def coerce_attractions(cls, v):
+        return [] if v is None else v
+
+    @field_validator("meals", mode="before")
+    @classmethod
+    def coerce_meals(cls, v):
+        if v is None:
+            return []
+        result = []
+        for m in v:
+            if isinstance(m, dict):
+                result.append(m.get("description") or m.get("name") or str(m))
+            else:
+                result.append(m)
+        return result
 
 
 class ItineraryResult(BaseModel):

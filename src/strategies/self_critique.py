@@ -132,6 +132,7 @@ class SelfCritiqueStrategy(BaseStrategy):
                 {"role": "user", "content": query},
             ],
             response_format={"type": "json_object"},
+            seed=42,
         )
         total_tokens += extract_response.usage.total_tokens
         params = json.loads(extract_response.choices[0].message.content)
@@ -195,6 +196,7 @@ class SelfCritiqueStrategy(BaseStrategy):
                 },
             ],
             response_format={"type": "json_object"},
+            seed=42,
         )
         total_tokens += draft_response.usage.total_tokens
         draft = json.loads(draft_response.choices[0].message.content)
@@ -213,6 +215,7 @@ class SelfCritiqueStrategy(BaseStrategy):
                 },
             ],
             response_format={"type": "json_object"},
+            seed=42,
         )
         total_tokens += critique_response.usage.total_tokens
         critique = json.loads(critique_response.choices[0].message.content)
@@ -241,6 +244,7 @@ class SelfCritiqueStrategy(BaseStrategy):
                     },
                 ],
                 response_format={"type": "json_object"},
+                seed=42,
             )
             total_tokens += refine_response.usage.total_tokens
             final = json.loads(refine_response.choices[0].message.content)

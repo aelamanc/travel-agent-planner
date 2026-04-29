@@ -114,6 +114,7 @@ class PlanExecuteStrategy(BaseStrategy):
                 {"role": "user", "content": query},
             ],
             response_format={"type": "json_object"},
+            seed=42,
         )
         total_tokens += plan_response.usage.total_tokens
         raw_plan = json.loads(plan_response.choices[0].message.content)
@@ -154,6 +155,7 @@ class PlanExecuteStrategy(BaseStrategy):
                 },
             ],
             response_format={"type": "json_object"},
+            seed=42,
         )
         total_tokens += synthesis_response.usage.total_tokens
         data = json.loads(synthesis_response.choices[0].message.content)

@@ -163,6 +163,7 @@ class ReActStrategy(BaseStrategy):
                 messages=messages,
                 tools=openai_tools,
                 tool_choice="required",  # always call a tool; prevents plain-text non-action responses
+                seed=42,
             )
 
             msg = response.choices[0].message
