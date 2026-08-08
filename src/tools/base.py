@@ -52,13 +52,10 @@ class BaseTool(ABC):
         """Execute with real API calls."""
         ...
 
-    def to_openai_tool(self) -> dict:
-        """Convert to OpenAI function-calling tool format."""
+    def to_anthropic_tool(self) -> dict:
+        """Convert to Anthropic tool-use format."""
         return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters_schema,
-            },
+            "name": self.name,
+            "description": self.description,
+            "input_schema": self.parameters_schema,
         }

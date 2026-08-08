@@ -1,21 +1,16 @@
 """Plan-then-Execute strategy: generate full plan upfront, execute sequentially."""
 
 import json
-import time
 
-from openai import OpenAI
-
+from ..llm_loop import ITINERARY_TOOL_SCHEMA, run_tool_loop
 from ..models import ItineraryResult
-from ..tools.base import BaseTool
+from ..token_tracker import StrategyRunTracker
 from .base import BaseStrategy
 
 PLANNING_SYSTEM_PROMPT = """\
 You are a travel planning assistant. Given a user's travel request, produce a \
 step-by-step plan of exactly which tool calls to make to gather all information \
-needed for a complete itinerary.
-
-Output ONLY a valid JSON object with a "steps" array. Each step must have "tool" and "args" keys.
-Do not include any explanation or markdown — only the raw JSON object.
+needed for a complete itinerary, then call `submit_plan` with that plan.
 
 Available tools:
 - search_flights: required: origin (str), destination (str), date (str YYYY-MM-DD); optional: max_price (number)
@@ -30,58 +25,12 @@ Rules:
 - If budget is mentioned, pass it as max_price / max_price_per_night.
 - For preferences, infer from the query (e.g. "museums" → ["museum"], "food lover" → ["food"]).
 - The return flight swaps origin/destination and uses the end date.
-
-Example output:
-{
-  "steps": [
-    {"tool": "search_flights", "args": {"origin": "JFK", "destination": "Paris", "date": "2025-06-15", "max_price": 500}},
-    {"tool": "search_flights", "args": {"origin": "Paris", "destination": "JFK", "date": "2025-06-20", "max_price": 500}},
-    {"tool": "search_hotels", "args": {"destination": "Paris", "check_in": "2025-06-15", "check_out": "2025-06-20", "max_price_per_night": 150}},
-    {"tool": "get_weather", "args": {"destination": "Paris", "start_date": "2025-06-15", "end_date": "2025-06-20"}},
-    {"tool": "get_attractions", "args": {"destination": "Paris", "preferences": ["museum", "food"]}}
-  ]
-}
 """
 
 SYNTHESIS_SYSTEM_PROMPT = """\
 You are a travel planning assistant. You have executed a plan and collected results \
-from several tools. Using ALL of the tool results below, create a complete travel \
-itinerary.
-
-Return ONLY a valid JSON object (no markdown, no explanation) with these exact fields:
-{
-  "destination": "city name",
-  "start_date": "YYYY-MM-DD",
-  "end_date": "YYYY-MM-DD",
-  "selected_flight": {
-    "airline": "", "flight_number": "", "origin": "", "destination": "",
-    "departure_time": "", "arrival_time": "", "price": 0.0,
-    "duration_hours": 0.0, "stops": 0
-  },
-  "return_flight": {
-    "airline": "", "flight_number": "", "origin": "", "destination": "",
-    "departure_time": "", "arrival_time": "", "price": 0.0,
-    "duration_hours": 0.0, "stops": 0
-  },
-  "selected_hotel": {
-    "name": "", "address": "", "price_per_night": 0.0, "rating": 0.0,
-    "amenities": [], "total_price": 0.0
-  },
-  "daily_plan": [
-    {
-      "date": "YYYY-MM-DD",
-      "weather": "brief weather description",
-      "attractions": [
-        {"name": "", "category": "", "rating": 0.0, "price": 0.0, "description": "", "duration_hours": 0.0}
-      ],
-      "meals": ["Breakfast at ...", "Lunch at ...", "Dinner at ..."],
-      "estimated_cost": 0.0
-    }
-  ],
-  "weather_summary": "overall weather summary",
-  "total_estimated_cost": 0.0,
-  "natural_language_summary": "2-3 sentence overview of the trip"
-}
+from several tools. Using ALL of the tool results below, call `finish_itinerary` \
+with a complete travel itinerary.
 
 Guidelines:
 - Pick the best flight and hotel given any budget constraints.
@@ -92,41 +41,54 @@ Guidelines:
 - Respect any stated budget — flag in natural_language_summary if over budget.
 """
 
+PLAN_TOOL_SCHEMA = {
+    "name": "submit_plan",
+    "description": "Submit the step-by-step tool-call plan.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "steps": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "tool": {
+                            "type": "string",
+                            "enum": ["search_flights", "search_hotels", "get_weather", "get_attractions"],
+                        },
+                        "args": {"type": "object"},
+                    },
+                    "required": ["tool", "args"],
+                },
+            },
+        },
+        "required": ["steps"],
+    },
+}
+
 
 class PlanExecuteStrategy(BaseStrategy):
-    def __init__(self, tools: list[BaseTool], model: str = "gpt-4o"):
-        super().__init__(tools, model)
-        self.client = OpenAI()
-
     @property
     def strategy_name(self) -> str:
         return "plan_then_execute"
 
-    def run(self, query: str) -> ItineraryResult:
-        start_time = time.time()
-        total_tokens = 0
+    async def run(self, query: str) -> ItineraryResult:
+        tracker = StrategyRunTracker()
 
         # ── Phase 1: Generate plan ────────────────────────────────────
-        plan_response = self.client.chat.completions.create(
+        plan_result = await run_tool_loop(
+            client=self.client,
             model=self.model,
-            messages=[
-                {"role": "system", "content": PLANNING_SYSTEM_PROMPT},
-                {"role": "user", "content": query},
-            ],
-            response_format={"type": "json_object"},
-            seed=42,
+            system=PLANNING_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": query}],
+            tools=[PLAN_TOOL_SCHEMA],
+            tool_choice={"type": "tool", "name": "submit_plan"},
+            single_shot=True,
+            max_tokens=2048,
+            temperature=0,
         )
-        total_tokens += plan_response.usage.total_tokens
-        raw_plan = json.loads(plan_response.choices[0].message.content)
-
-        # The model may return {"steps": [...]} or a bare array wrapped in a key
-        if isinstance(raw_plan, list):
-            plan = raw_plan
-        else:
-            # Find the first list value in the response object
-            plan = next(
-                (v for v in raw_plan.values() if isinstance(v, list)), []
-            )
+        tracker.record(plan_result)
+        plan = plan_result.forced_tool_input.get("steps", [])
 
         # ── Phase 2: Execute plan ─────────────────────────────────────
         tool_results = []
@@ -142,10 +104,11 @@ class PlanExecuteStrategy(BaseStrategy):
 
         # ── Phase 3: Synthesize itinerary ─────────────────────────────
         tool_context = json.dumps(tool_results, indent=2)
-        synthesis_response = self.client.chat.completions.create(
+        synthesis_result = await run_tool_loop(
+            client=self.client,
             model=self.model,
+            system=SYNTHESIS_SYSTEM_PROMPT,
             messages=[
-                {"role": "system", "content": SYNTHESIS_SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": (
@@ -154,18 +117,19 @@ class PlanExecuteStrategy(BaseStrategy):
                     ),
                 },
             ],
-            response_format={"type": "json_object"},
-            seed=42,
+            tools=[ITINERARY_TOOL_SCHEMA],
+            tool_choice={"type": "tool", "name": "finish_itinerary"},
+            single_shot=True,
+            max_tokens=4096,
+            temperature=0,
         )
-        total_tokens += synthesis_response.usage.total_tokens
-        data = json.loads(synthesis_response.choices[0].message.content)
+        tracker.record(synthesis_result)
+        data = synthesis_result.forced_tool_input
 
-        latency = time.time() - start_time
-        return self._build_result(data, total_tokens, latency)
+        self.last_run_usage = tracker.usage
+        return self._build_result(data, tracker)
 
-    def _build_result(
-        self, data: dict, tokens: int, latency: float
-    ) -> ItineraryResult:
+    def _build_result(self, data: dict, tracker: StrategyRunTracker) -> ItineraryResult:
         flight = data.get("selected_flight", {})
         return_flight = data.get("return_flight")
         hotel = data.get("selected_hotel", {})
@@ -192,6 +156,6 @@ class PlanExecuteStrategy(BaseStrategy):
             total_estimated_cost=data.get("total_estimated_cost", 0),
             natural_language_summary=data.get("natural_language_summary", ""),
             strategy_used=self.strategy_name,
-            tokens_used=tokens,
-            latency_seconds=round(latency, 2),
+            tokens_used=tracker.usage.total,
+            latency_seconds=round(tracker.latency_seconds, 2),
         )

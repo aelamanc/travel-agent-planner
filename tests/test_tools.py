@@ -27,10 +27,10 @@ class TestSearchFlights:
         result = self.tool.run(origin="JFK", destination="Narnia", date="2025-06-15")
         assert result["count"] > 0
 
-    def test_openai_tool_format(self):
-        tool_def = self.tool.to_openai_tool()
-        assert tool_def["type"] == "function"
-        assert tool_def["function"]["name"] == "search_flights"
+    def test_anthropic_tool_format(self):
+        tool_def = self.tool.to_anthropic_tool()
+        assert tool_def["name"] == "search_flights"
+        assert "input_schema" in tool_def
 
 
 class TestSearchHotels:

@@ -13,23 +13,22 @@ class TestBaseStrategy:
         names = {t.name for t in TOOL_REGISTRY}
         assert names == {"search_flights", "search_hotels", "get_weather", "get_attractions"}
 
-    def test_openai_tools_format(self):
+    def test_anthropic_tools_format(self):
         # Use a concrete strategy to test the base method
         class DummyStrategy(BaseStrategy):
             @property
             def strategy_name(self):
                 return "dummy"
 
-            def run(self, query):
+            async def run(self, query):
                 pass
 
         s = DummyStrategy(TOOL_REGISTRY)
-        tools = s._get_openai_tools()
+        tools = s._get_anthropic_tools()
         assert len(tools) == 4
         for t in tools:
-            assert t["type"] == "function"
-            assert "name" in t["function"]
-            assert "parameters" in t["function"]
+            assert "name" in t
+            assert "input_schema" in t
 
     def test_execute_tool(self):
         class DummyStrategy(BaseStrategy):
@@ -37,7 +36,7 @@ class TestBaseStrategy:
             def strategy_name(self):
                 return "dummy"
 
-            def run(self, query):
+            async def run(self, query):
                 pass
 
         s = DummyStrategy(TOOL_REGISTRY)
@@ -53,7 +52,7 @@ class TestBaseStrategy:
             def strategy_name(self):
                 return "dummy"
 
-            def run(self, query):
+            async def run(self, query):
                 pass
 
         s = DummyStrategy(TOOL_REGISTRY)

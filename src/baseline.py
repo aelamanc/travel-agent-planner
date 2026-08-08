@@ -1,57 +1,43 @@
 """Zero-shot baseline: single LLM call with no tool use."""
 
-import json
-import time
-
-from openai import OpenAI
-
+from .llm_loop import ITINERARY_TOOL_SCHEMA, run_tool_loop
 from .models import ItineraryResult
+from .strategies.base import BaseStrategy
+from .token_tracker import StrategyRunTracker
 
 SYSTEM_PROMPT = """\
 You are a travel planning assistant. Given a user's travel request, produce a \
-complete travel itinerary as a JSON object with the following fields:
-- destination (string)
-- start_date (string YYYY-MM-DD)
-- end_date (string YYYY-MM-DD)
-- selected_flight (object with: airline, flight_number, origin, destination, departure_time, arrival_time, price, duration_hours, stops)
-- return_flight (same fields as selected_flight but for the return journey on the end date)
-- selected_hotel (object with: name, address, price_per_night, rating, amenities, total_price)
-- daily_plan (array of objects, each with: date, weather, attractions (array of objects with name, category, rating, price, description, duration_hours), meals (array of strings), estimated_cost)
-- weather_summary (string)
-- total_estimated_cost (number)
-- natural_language_summary (string)
-
-Return ONLY valid JSON, no markdown fences or extra text.
-"""
+complete travel itinerary by calling `finish_itinerary` with the complete data. \
+You have no tools for searching real flights, hotels, weather, or attractions — \
+use your own knowledge to produce a plausible itinerary."""
 
 
-class ZeroShotBaseline:
-    def __init__(self, model: str = "gpt-4o"):
-        self.model = model
-        self.client = OpenAI()
+class ZeroShotBaseline(BaseStrategy):
+    """Not a `BaseStrategy` subclass before this migration — folded in here so
+    the shared Anthropic tool-loop mixin (`self.client`, `run()` contract)
+    serves it too."""
 
     @property
     def strategy_name(self) -> str:
         return "zero_shot_baseline"
 
-    def run(self, query: str) -> ItineraryResult:
-        start_time = time.time()
+    async def run(self, query: str) -> ItineraryResult:
+        tracker = StrategyRunTracker()
 
-        response = self.client.chat.completions.create(
+        result = await run_tool_loop(
+            client=self.client,
             model=self.model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": query},
-            ],
-            response_format={"type": "json_object"},
-            seed=42,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": query}],
+            tools=[ITINERARY_TOOL_SCHEMA],
+            tool_choice={"type": "tool", "name": "finish_itinerary"},
+            single_shot=True,
+            max_tokens=4096,
+            temperature=0,
         )
+        tracker.record(result)
+        raw = result.forced_tool_input
 
-        total_tokens = response.usage.total_tokens
-        raw = json.loads(response.choices[0].message.content)
-        latency = time.time() - start_time
-
-        # Normalize the response into ItineraryResult
         flight = raw.get("selected_flight", {})
         return_flight = raw.get("return_flight")
         hotel = raw.get("selected_hotel", {})
@@ -64,6 +50,8 @@ class ZeroShotBaseline:
         flights = [flight] if flight else []
         if return_flight:
             flights.append(return_flight)
+
+        self.last_run_usage = tracker.usage
 
         return ItineraryResult(
             destination=raw.get("destination", "unknown"),
@@ -78,6 +66,6 @@ class ZeroShotBaseline:
             total_estimated_cost=raw.get("total_estimated_cost", 0),
             natural_language_summary=raw.get("natural_language_summary", ""),
             strategy_used=self.strategy_name,
-            tokens_used=total_tokens,
-            latency_seconds=round(latency, 2),
+            tokens_used=tracker.usage.total,
+            latency_seconds=round(tracker.latency_seconds, 2),
         )
