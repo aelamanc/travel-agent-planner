@@ -15,6 +15,30 @@ The four existing strategies become controls: same semantics, same direct tool c
 model backend changes underneath them. Old GPT-4o eval numbers are not comparable post-migration
 and will be kept as a labeled historical row once new baselines are established on Claude.
 
+## Deviations from this plan, found during implementation
+
+Two things below turned out different from what this document originally specified, discovered
+by actually running the code rather than by design review. Both are corrected in the
+implementation; this plan is left as-written above (as the record of what was approved) with
+the correction noted here rather than silently edited in.
+
+1. **No `temperature` parameter is sent at all — not `temperature=0`.** This plan's original
+   wording ("`temperature=0` explicit") was wrong: `claude-sonnet-5` (and the rest of the
+   Sonnet-5/Opus-5-tier model family) rejects `temperature`/`top_p`/`top_k` outright with a 400,
+   full stop, not just when non-default. This was invisible through all of chunks 1–3 because
+   Haiku 4.5 (the default iteration model) still accepts the parameter — it only surfaced when
+   the first full Sonnet eval run failed all 200 calls at request validation before generating a
+   single token. `run_tool_loop()` and every call site now omit the parameter entirely. This
+   doesn't change the reproducibility framing below — `temperature=0` was already documented as
+   best-effort, not a guarantee, and dropping the parameter doesn't make that claim any less true.
+2. **The installed `mcp` SDK (2.0.0) is a materially different generation than this plan assumed**
+   (`mcp.server.fastmcp.FastMCP` / classic `ClientSession`+`stdio_client`). The actual API is
+   `mcp.server.mcpserver.MCPServer` and a higher-level `mcp.client.Client` that connects directly
+   to either an in-process server instance or a stdio transport with the same interface — which
+   ended up *simpler* than the `ClientSession`-based design sketched here, not more complex.
+   `src/mcp_servers/*.py` and `src/agents/mcp_session_manager.py` reflect the real API; nothing in
+   the module layout or responsibilities below changed as a result.
+
 ## Load-bearing decisions
 
 1. **MCP is used by exactly one of five strategies** — `orchestrated`. The four controls keep

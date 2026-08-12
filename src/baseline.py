@@ -33,7 +33,6 @@ class ZeroShotBaseline(BaseStrategy):
             tool_choice={"type": "tool", "name": "finish_itinerary"},
             single_shot=True,
             max_tokens=4096,
-            temperature=0,
         )
         tracker.record(result)
         raw = result.forced_tool_input

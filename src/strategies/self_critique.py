@@ -111,7 +111,6 @@ class SelfCritiqueStrategy(BaseStrategy):
             tool_choice={"type": "tool", "name": "submit_params"},
             single_shot=True,
             max_tokens=1024,
-            temperature=0,
         )
         tracker.record(extract_result)
         params = extract_result.forced_tool_input
@@ -177,7 +176,6 @@ class SelfCritiqueStrategy(BaseStrategy):
             tool_choice={"type": "tool", "name": "finish_itinerary"},
             single_shot=True,
             max_tokens=4096,
-            temperature=0,
         )
         tracker.record(draft_result)
         draft = draft_result.forced_tool_input
@@ -200,7 +198,6 @@ class SelfCritiqueStrategy(BaseStrategy):
             tool_choice={"type": "tool", "name": "submit_critique"},
             single_shot=True,
             max_tokens=1024,
-            temperature=0,
         )
         tracker.record(critique_result)
         critique = critique_result.forced_tool_input
@@ -233,7 +230,6 @@ class SelfCritiqueStrategy(BaseStrategy):
                 tool_choice={"type": "tool", "name": "finish_itinerary"},
                 single_shot=True,
                 max_tokens=4096,
-                temperature=0,
             )
             tracker.record(refine_result)
             final = refine_result.forced_tool_input

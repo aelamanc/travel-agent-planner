@@ -47,6 +47,5 @@ async def synthesize(
         tool_choice={"type": "tool", "name": "finish_itinerary"},
         single_shot=True,
         max_tokens=max_tokens,
-        temperature=0,
     )
     return result.forced_tool_input, result.usage

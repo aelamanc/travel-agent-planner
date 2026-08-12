@@ -58,7 +58,6 @@ async def parse_constraints(
         tool_choice={"type": "tool", "name": "extract_constraints"},
         single_shot=True,
         max_tokens=max_tokens,
-        temperature=0,
     )
     data = result.forced_tool_input
     constraints = ConstraintSet(

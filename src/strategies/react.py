@@ -56,7 +56,6 @@ class ReActStrategy(BaseStrategy):
             stop_when=lambda block: block.name == "finish_itinerary",
             max_iterations=MAX_ITERATIONS,
             max_tokens=4096,
-            temperature=0,
         )
         tracker.record(result)
         self.last_run_usage = tracker.usage

@@ -104,7 +104,6 @@ class DomainAgent:
             tool_choice={"type": "auto"},
             max_tool_calls=remaining_calls,
             max_tokens=self.max_tokens,
-            temperature=0,
         )
         tracker.record(result)
         self.tool_calls_made += result.num_tool_calls

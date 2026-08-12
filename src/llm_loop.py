@@ -152,7 +152,6 @@ async def run_tool_loop(
     max_tool_calls: int | None = None,
     max_iterations: int = 15,
     max_tokens: int,
-    temperature: float = 0,
 ) -> LoopResult:
     """Drive one Anthropic tool_use/tool_result conversation to completion.
 
@@ -165,6 +164,11 @@ async def run_tool_loop(
     tool_result user message per Anthropic's convention — until `stop_when`
     matches a tool_use block, the model stops calling tools (`end_turn`),
     `max_tool_calls` is reached, or `max_iterations` is exhausted.
+
+    No `temperature` (or `top_p`/`top_k`) is set: newer Claude models
+    (Sonnet 5, Opus 5+) reject sampling parameters outright (400), and on
+    models that do accept them, `temperature=0` never guaranteed determinism
+    anyway — reproducibility here is best-effort by default, not a lever.
     """
     usage = TokenUsage()
     num_tool_calls = 0
@@ -177,7 +181,6 @@ async def run_tool_loop(
             max_tokens=max_tokens,
             system=system,
             messages=convo,
-            temperature=temperature,
         )
         if tools:
             create_kwargs["tools"] = tools

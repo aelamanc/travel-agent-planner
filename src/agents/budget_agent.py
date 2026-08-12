@@ -95,7 +95,6 @@ async def evaluate_budget(
         tool_choice={"type": "tool", "name": "reallocate"},
         single_shot=True,
         max_tokens=max_tokens,
-        temperature=0,
     )
     data = result.forced_tool_input
     directive = ReallocationDirective(

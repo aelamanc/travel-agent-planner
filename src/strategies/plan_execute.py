@@ -85,7 +85,6 @@ class PlanExecuteStrategy(BaseStrategy):
             tool_choice={"type": "tool", "name": "submit_plan"},
             single_shot=True,
             max_tokens=2048,
-            temperature=0,
         )
         tracker.record(plan_result)
         plan = plan_result.forced_tool_input.get("steps", [])
@@ -121,7 +120,6 @@ class PlanExecuteStrategy(BaseStrategy):
             tool_choice={"type": "tool", "name": "finish_itinerary"},
             single_shot=True,
             max_tokens=4096,
-            temperature=0,
         )
         tracker.record(synthesis_result)
         data = synthesis_result.forced_tool_input
