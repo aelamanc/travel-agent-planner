@@ -1,75 +1,31 @@
 """Self-Critique strategy: gather all data, draft, critique, then refine."""
 
 import json
-import time
 
-from openai import OpenAI
-
+from ..llm_loop import ITINERARY_TOOL_SCHEMA, run_tool_loop
 from ..models import ItineraryResult
-from ..tools.base import BaseTool
+from ..token_tracker import StrategyRunTracker
 from .base import BaseStrategy
 
 TOOL_EXTRACTION_SYSTEM_PROMPT = """\
 You are a travel query parser. Extract structured parameters from the user's travel \
-request and return ONLY a valid JSON object (no markdown) with these fields:
-{
-  "destinations": ["city1", "city2", ...],
-  "origin": "departure city or airport (default JFK if not mentioned)",
-  "start_date": "YYYY-MM-DD",
-  "end_date": "YYYY-MM-DD",
-  "max_budget": null or number (total trip budget in USD),
-  "max_flight_price": null or number,
-  "max_hotel_per_night": null or number,
-  "preferences": []  (list of categories from: museum, landmark, food, park, shopping, tour)
-}
+request by calling `submit_params`.
 - end_date is also the return flight date.
 - Always return "destinations" as an array, even for a single city (e.g. ["Paris"]).
 - For multi-city trips list every city in order (e.g. ["Tokyo", "Rome"]).
 - If any date is not explicitly given, infer a reasonable near-future date.
+- If origin is not mentioned, default to "JFK".
+- Preferences should be categories from: museum, landmark, food, park, shopping, tour.
 """
 
 DRAFT_SYSTEM_PROMPT = """\
 You are a travel planning assistant. Using the tool results provided, create a \
-complete travel itinerary draft.
+complete travel itinerary draft by calling `finish_itinerary`.
 
 For multi-city trips: set "destination" to a comma-separated string (e.g. "Paris, Tokyo"), \
 use the outbound flight to the first city as "selected_flight", pick the best hotel for \
 the primary city as "selected_hotel", and distribute daily_plan entries across all cities.
 
-Return ONLY a valid JSON object (no markdown) with these exact fields:
-{
-  "destination": "city name",
-  "start_date": "YYYY-MM-DD",
-  "end_date": "YYYY-MM-DD",
-  "selected_flight": {
-    "airline": "", "flight_number": "", "origin": "", "destination": "",
-    "departure_time": "", "arrival_time": "", "price": 0.0,
-    "duration_hours": 0.0, "stops": 0
-  },
-  "return_flight": {
-    "airline": "", "flight_number": "", "origin": "", "destination": "",
-    "departure_time": "", "arrival_time": "", "price": 0.0,
-    "duration_hours": 0.0, "stops": 0
-  },
-  "selected_hotel": {
-    "name": "", "address": "", "price_per_night": 0.0, "rating": 0.0,
-    "amenities": [], "total_price": 0.0
-  },
-  "daily_plan": [
-    {
-      "date": "YYYY-MM-DD",
-      "weather": "brief weather description",
-      "attractions": [
-        {"name": "", "category": "", "rating": 0.0, "price": 0.0, "description": "", "duration_hours": 0.0}
-      ],
-      "meals": ["Breakfast at ...", "Lunch at ...", "Dinner at ..."],
-      "estimated_cost": 0.0
-    }
-  ],
-  "weather_summary": "",
-  "total_estimated_cost": 0.0,
-  "natural_language_summary": ""
-}
 - Create one day entry per travel day.
 - Distribute 2-3 attractions per day.
 - Pick the best flight and hotel from the options provided.
@@ -78,14 +34,7 @@ Return ONLY a valid JSON object (no markdown) with these exact fields:
 
 CRITIQUE_SYSTEM_PROMPT = """\
 You are a strict travel itinerary reviewer. Given the original user request and a \
-draft itinerary, identify every flaw and score the draft.
-
-Return ONLY a valid JSON object (no markdown):
-{
-  "score": <integer 1-10>,
-  "issues": ["specific issue 1", "specific issue 2", ...],
-  "suggestions": ["specific fix 1", "specific fix 2", ...]
-}
+draft itinerary, identify every flaw and score the draft by calling `submit_critique`.
 
 Check ALL of the following:
 - Budget: does total_estimated_cost exceed any stated budget?
@@ -103,39 +52,68 @@ You are a travel planning assistant performing a final refinement pass. You have
 2. A draft itinerary
 3. A critique with specific issues and suggestions
 
-Fix EVERY issue listed in the critique. Return the improved itinerary as ONLY a \
-valid JSON object in the exact same format as the draft (no markdown, no explanation).
+Fix EVERY issue listed in the critique, then call `finish_itinerary` with the improved \
+itinerary in the exact same format as the draft.
 
 If the total cost exceeds the user's budget, pick cheaper flights/hotels from the \
 original tool results and reduce daily activity costs accordingly.
 """
 
+PARAMS_TOOL_SCHEMA = {
+    "name": "submit_params",
+    "description": "Submit the extracted structured travel parameters.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "destinations": {"type": "array", "items": {"type": "string"}},
+            "origin": {"type": "string"},
+            "start_date": {"type": "string", "description": "YYYY-MM-DD"},
+            "end_date": {"type": "string", "description": "YYYY-MM-DD"},
+            "max_budget": {"type": ["number", "null"], "description": "Total trip budget in USD"},
+            "max_flight_price": {"type": ["number", "null"]},
+            "max_hotel_per_night": {"type": ["number", "null"]},
+            "preferences": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["destinations", "origin", "start_date", "end_date"],
+    },
+}
+
+CRITIQUE_TOOL_SCHEMA = {
+    "name": "submit_critique",
+    "description": "Submit the critique of the draft itinerary.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "score": {"type": "integer", "description": "1-10"},
+            "issues": {"type": "array", "items": {"type": "string"}},
+            "suggestions": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["score", "issues", "suggestions"],
+    },
+}
+
 
 class SelfCritiqueStrategy(BaseStrategy):
-    def __init__(self, tools: list[BaseTool], model: str = "gpt-4o"):
-        super().__init__(tools, model)
-        self.client = OpenAI()
-
     @property
     def strategy_name(self) -> str:
         return "self_critique"
 
-    def run(self, query: str) -> ItineraryResult:
-        start_time = time.time()
-        total_tokens = 0
+    async def run(self, query: str) -> ItineraryResult:
+        tracker = StrategyRunTracker()
 
         # ── Phase 1: Extract structured params from query ─────────────
-        extract_response = self.client.chat.completions.create(
+        extract_result = await run_tool_loop(
+            client=self.client,
             model=self.model,
-            messages=[
-                {"role": "system", "content": TOOL_EXTRACTION_SYSTEM_PROMPT},
-                {"role": "user", "content": query},
-            ],
-            response_format={"type": "json_object"},
-            seed=42,
+            system=TOOL_EXTRACTION_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": query}],
+            tools=[PARAMS_TOOL_SCHEMA],
+            tool_choice={"type": "tool", "name": "submit_params"},
+            single_shot=True,
+            max_tokens=1024,
         )
-        total_tokens += extract_response.usage.total_tokens
-        params = json.loads(extract_response.choices[0].message.content)
+        tracker.record(extract_result)
+        params = extract_result.forced_tool_input
 
         raw_destinations = params.get("destinations") or [params.get("destination", "Paris")]
         destinations = [d for d in raw_destinations if d]
@@ -179,14 +157,13 @@ class SelfCritiqueStrategy(BaseStrategy):
                 "attractions": self._execute_tool("get_attractions", attraction_args),
             }
 
-        destination = destinations[0] if len(destinations) == 1 else ", ".join(destinations)
-
         # ── Phase 3: Draft itinerary ──────────────────────────────────
         tool_context = json.dumps(tool_results, indent=2)
-        draft_response = self.client.chat.completions.create(
+        draft_result = await run_tool_loop(
+            client=self.client,
             model=self.model,
+            system=DRAFT_SYSTEM_PROMPT,
             messages=[
-                {"role": "system", "content": DRAFT_SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": (
@@ -195,17 +172,20 @@ class SelfCritiqueStrategy(BaseStrategy):
                     ),
                 },
             ],
-            response_format={"type": "json_object"},
-            seed=42,
+            tools=[ITINERARY_TOOL_SCHEMA],
+            tool_choice={"type": "tool", "name": "finish_itinerary"},
+            single_shot=True,
+            max_tokens=4096,
         )
-        total_tokens += draft_response.usage.total_tokens
-        draft = json.loads(draft_response.choices[0].message.content)
+        tracker.record(draft_result)
+        draft = draft_result.forced_tool_input
 
         # ── Phase 4: Critique ─────────────────────────────────────────
-        critique_response = self.client.chat.completions.create(
+        critique_result = await run_tool_loop(
+            client=self.client,
             model=self.model,
+            system=CRITIQUE_SYSTEM_PROMPT,
             messages=[
-                {"role": "system", "content": CRITIQUE_SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": (
@@ -214,11 +194,13 @@ class SelfCritiqueStrategy(BaseStrategy):
                     ),
                 },
             ],
-            response_format={"type": "json_object"},
-            seed=42,
+            tools=[CRITIQUE_TOOL_SCHEMA],
+            tool_choice={"type": "tool", "name": "submit_critique"},
+            single_shot=True,
+            max_tokens=1024,
         )
-        total_tokens += critique_response.usage.total_tokens
-        critique = json.loads(critique_response.choices[0].message.content)
+        tracker.record(critique_result)
+        critique = critique_result.forced_tool_input
 
         # ── Phase 5: Refine ───────────────────────────────────────────
         # Only refine if critique score < 8 or there are issues
@@ -229,10 +211,11 @@ class SelfCritiqueStrategy(BaseStrategy):
             # Draft is good enough — skip refinement to save tokens
             final = draft
         else:
-            refine_response = self.client.chat.completions.create(
+            refine_result = await run_tool_loop(
+                client=self.client,
                 model=self.model,
+                system=REFINE_SYSTEM_PROMPT,
                 messages=[
-                    {"role": "system", "content": REFINE_SYSTEM_PROMPT},
                     {
                         "role": "user",
                         "content": (
@@ -243,17 +226,19 @@ class SelfCritiqueStrategy(BaseStrategy):
                         ),
                     },
                 ],
-                response_format={"type": "json_object"},
-                seed=42,
+                tools=[ITINERARY_TOOL_SCHEMA],
+                tool_choice={"type": "tool", "name": "finish_itinerary"},
+                single_shot=True,
+                max_tokens=4096,
             )
-            total_tokens += refine_response.usage.total_tokens
-            final = json.loads(refine_response.choices[0].message.content)
+            tracker.record(refine_result)
+            final = refine_result.forced_tool_input
 
-        latency = time.time() - start_time
-        return self._build_result(final, critique, total_tokens, latency)
+        self.last_run_usage = tracker.usage
+        return self._build_result(final, critique, tracker)
 
     def _build_result(
-        self, data: dict, critique: dict, tokens: int, latency: float
+        self, data: dict, critique: dict, tracker: StrategyRunTracker
     ) -> ItineraryResult:
         # Normalize destination (LLM sometimes returns a list for multi-city)
         destination = data.get("destination", "unknown")
@@ -312,6 +297,6 @@ class SelfCritiqueStrategy(BaseStrategy):
             total_estimated_cost=data.get("total_estimated_cost", 0),
             natural_language_summary=summary,
             strategy_used=self.strategy_name,
-            tokens_used=tokens,
-            latency_seconds=round(latency, 2),
+            tokens_used=tracker.usage.total,
+            latency_seconds=round(tracker.latency_seconds, 2),
         )

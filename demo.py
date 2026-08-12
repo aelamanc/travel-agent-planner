@@ -1,11 +1,12 @@
 """Interactive demo: single ReAct query with live travel data."""
 
+import asyncio
 import json
 import os
 import sys
 
+from anthropic import AnthropicError
 from dotenv import load_dotenv
-from openai import OpenAIError
 
 load_dotenv()
 
@@ -13,9 +14,9 @@ from src.tools import create_tool_registry
 from src.strategies.react import ReActStrategy
 
 
-def main():
-    if not os.getenv("OPENAI_API_KEY"):
-        print("Missing OPENAI_API_KEY in .env", file=sys.stderr)
+async def main():
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        print("Missing ANTHROPIC_API_KEY in .env", file=sys.stderr)
         sys.exit(1)
 
     print("=" * 60)
@@ -41,12 +42,12 @@ def main():
     print("-" * 60)
 
     tools = create_tool_registry(mode="live")
-    strategy = ReActStrategy(tools=tools, model="gpt-4o")
+    strategy = ReActStrategy(tools=tools)
 
     try:
-        result = strategy.run(query)
-    except OpenAIError as e:
-        print(f"\nOpenAI API error: {e}", file=sys.stderr)
+        result = await strategy.run(query)
+    except AnthropicError as e:
+        print(f"\nAnthropic API error: {e}", file=sys.stderr)
         sys.exit(1)
 
     print(f"\n  Destination : {result.destination}")
@@ -86,4 +87,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

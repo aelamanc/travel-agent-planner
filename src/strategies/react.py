@@ -1,12 +1,8 @@
 """ReAct strategy: interleaved think-act-observe loop."""
 
-import json
-import time
-
-from openai import OpenAI
-
+from ..llm_loop import ITINERARY_TOOL_SCHEMA, run_tool_loop
 from ..models import ItineraryResult
-from ..tools.base import BaseTool
+from ..token_tracker import StrategyRunTracker
 from .base import BaseStrategy
 
 SYSTEM_PROMPT = """\
@@ -30,176 +26,47 @@ Important guidelines:
 - Include estimated costs for each day.
 """
 
-FINISH_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "finish_itinerary",
-        "description": (
-            "Call this when you have all the information needed to produce "
-            "the final travel itinerary. Pass the complete itinerary data."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "destination": {"type": "string"},
-                "start_date": {"type": "string", "description": "YYYY-MM-DD"},
-                "end_date": {"type": "string", "description": "YYYY-MM-DD"},
-                "selected_flight": {
-                    "type": "object",
-                    "description": "The chosen flight option",
-                    "properties": {
-                        "airline": {"type": "string"},
-                        "flight_number": {"type": "string"},
-                        "origin": {"type": "string"},
-                        "destination": {"type": "string"},
-                        "departure_time": {"type": "string"},
-                        "arrival_time": {"type": "string"},
-                        "price": {"type": "number"},
-                        "duration_hours": {"type": "number"},
-                        "stops": {"type": "integer"},
-                    },
-                },
-                "return_flight": {
-                    "type": "object",
-                    "description": "The chosen return flight (optional)",
-                    "properties": {
-                        "airline": {"type": "string"},
-                        "flight_number": {"type": "string"},
-                        "origin": {"type": "string"},
-                        "destination": {"type": "string"},
-                        "departure_time": {"type": "string"},
-                        "arrival_time": {"type": "string"},
-                        "price": {"type": "number"},
-                        "duration_hours": {"type": "number"},
-                        "stops": {"type": "integer"},
-                    },
-                },
-                "selected_hotel": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string"},
-                        "address": {"type": "string"},
-                        "price_per_night": {"type": "number"},
-                        "rating": {"type": "number"},
-                        "amenities": {"type": "array", "items": {"type": "string"}},
-                        "total_price": {"type": "number"},
-                    },
-                },
-                "daily_plan": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "date": {"type": "string"},
-                            "weather": {"type": "string"},
-                            "attractions": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "name": {"type": "string"},
-                                        "category": {"type": "string"},
-                                        "rating": {"type": "number"},
-                                        "price": {"type": "number"},
-                                        "description": {"type": "string"},
-                                        "duration_hours": {"type": "number"},
-                                    },
-                                },
-                            },
-                            "meals": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                            },
-                            "estimated_cost": {"type": "number"},
-                        },
-                    },
-                },
-                "weather_summary": {"type": "string"},
-                "total_estimated_cost": {"type": "number"},
-                "natural_language_summary": {"type": "string"},
-            },
-            "required": [
-                "destination",
-                "start_date",
-                "end_date",
-                "selected_flight",
-                "return_flight",
-                "selected_hotel",
-                "daily_plan",
-                "weather_summary",
-                "total_estimated_cost",
-                "natural_language_summary",
-            ],
-        },
-    },
-}
+# `finish_itinerary` is a synthetic control-flow tool, not a real one — it is
+# appended to the real tool list every call but never added to the tool
+# registry (src/tools/__init__.py).
+FINISH_TOOL = ITINERARY_TOOL_SCHEMA
 
 MAX_ITERATIONS = 15
 
 
 class ReActStrategy(BaseStrategy):
-    def __init__(self, tools: list[BaseTool], model: str = "gpt-4o"):
-        super().__init__(tools, model)
-        self.client = OpenAI()
-
     @property
     def strategy_name(self) -> str:
         return "react"
 
-    def run(self, query: str) -> ItineraryResult:
-        start_time = time.time()
-        total_tokens = 0
+    async def run(self, query: str) -> ItineraryResult:
+        tracker = StrategyRunTracker()
 
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": query},
-        ]
+        messages = [{"role": "user", "content": query}]
+        tools = self._get_anthropic_tools() + [FINISH_TOOL]
 
-        openai_tools = self._get_openai_tools() + [FINISH_TOOL]
+        result = await run_tool_loop(
+            client=self.client,
+            model=self.model,
+            system=SYSTEM_PROMPT,
+            messages=messages,
+            tools=tools,
+            execute_tool=self._execute_tool,
+            tool_choice={"type": "any"},  # always call a tool; prevents plain-text non-action responses
+            stop_when=lambda block: block.name == "finish_itinerary",
+            max_iterations=MAX_ITERATIONS,
+            max_tokens=4096,
+        )
+        tracker.record(result)
+        self.last_run_usage = tracker.usage
 
-        for _ in range(MAX_ITERATIONS):
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                tools=openai_tools,
-                tool_choice="required",  # always call a tool; prevents plain-text non-action responses
-                seed=42,
-            )
+        if result.forced_tool_input is not None:
+            return self._build_result(result.forced_tool_input, tracker)
 
-            msg = response.choices[0].message
-            total_tokens += response.usage.total_tokens
+        # Exhausted MAX_ITERATIONS without calling finish_itinerary
+        return self._build_fallback(query, tracker)
 
-            messages.append(msg)
-
-            if not msg.tool_calls:
-                break
-
-            # Process each tool call
-            for tool_call in msg.tool_calls:
-                fn_name = tool_call.function.name
-                fn_args = json.loads(tool_call.function.arguments)
-
-                if fn_name == "finish_itinerary":
-                    # Build and return the final itinerary
-                    latency = time.time() - start_time
-                    return self._build_result(fn_args, total_tokens, latency)
-
-                # Execute the real tool
-                result = self._execute_tool(fn_name, fn_args)
-
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": json.dumps(result),
-                })
-
-        # If we exhaust iterations, return whatever we have
-        latency = time.time() - start_time
-        return self._build_fallback(query, total_tokens, latency)
-
-    def _build_result(
-        self, data: dict, tokens: int, latency: float
-    ) -> ItineraryResult:
+    def _build_result(self, data: dict, tracker: StrategyRunTracker) -> ItineraryResult:
         """Convert the finish_itinerary arguments into an ItineraryResult."""
         flight = data.get("selected_flight", {})
         ret_flight = data.get("return_flight")
@@ -225,13 +92,11 @@ class ReActStrategy(BaseStrategy):
             total_estimated_cost=data.get("total_estimated_cost", 0),
             natural_language_summary=data.get("natural_language_summary", ""),
             strategy_used=self.strategy_name,
-            tokens_used=tokens,
-            latency_seconds=round(latency, 2),
+            tokens_used=tracker.usage.total,
+            latency_seconds=round(tracker.latency_seconds, 2),
         )
 
-    def _build_fallback(
-        self, query: str, tokens: int, latency: float
-    ) -> ItineraryResult:
+    def _build_fallback(self, query: str, tracker: StrategyRunTracker) -> ItineraryResult:
         """Fallback if the agent didn't call finish_itinerary."""
         return ItineraryResult(
             destination="unknown",
@@ -250,6 +115,6 @@ class ReActStrategy(BaseStrategy):
             total_estimated_cost=0,
             natural_language_summary=f"Failed to complete itinerary for: {query}",
             strategy_used=self.strategy_name,
-            tokens_used=tokens,
-            latency_seconds=round(latency, 2),
+            tokens_used=tracker.usage.total,
+            latency_seconds=round(tracker.latency_seconds, 2),
         )
