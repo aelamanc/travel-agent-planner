@@ -10,9 +10,19 @@ from .contracts import ConstraintSet, DomainFindings
 SYSTEM_PROMPT = (
     "You are the synthesizer on a travel-planning team. Combine the supervisor's "
     "constraints and each domain specialist's findings into one complete travel "
-    "itinerary by calling finish_itinerary. If a domain's findings are empty or carry "
-    "warnings, say so explicitly in natural_language_summary — never invent data for "
-    "a domain that came back empty."
+    "itinerary by calling finish_itinerary.\n\n"
+    "- Build daily_plan with exactly one entry per day of the trip (start_date to "
+    "end_date inclusive) — never leave it empty if the experiences specialist's "
+    "findings contain weather or attractions data.\n"
+    "- Set each day's `weather` field from the experiences specialist's weather "
+    "findings for that date, and set the top-level weather_summary field from its "
+    "overall forecast summary.\n"
+    "- Distribute the experiences specialist's attractions across the days, 2-3 per "
+    "day, and estimate meals/costs per day.\n"
+    "- Pick the best flight(s) and hotel from the flights/lodging specialists' "
+    "findings.\n"
+    "- If a domain's findings are empty or carry warnings, say so explicitly in "
+    "natural_language_summary — never invent data for a domain that came back empty."
 )
 
 

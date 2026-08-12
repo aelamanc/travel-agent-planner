@@ -1,5 +1,6 @@
 """Streamlit demo UI for the Agentic Travel Planner."""
 
+import asyncio
 import os
 import sys
 
@@ -169,15 +170,29 @@ def strategy_label(name: str) -> str:
         "plan": "Plan-then-Execute",
         "critique": "Self-Critique",
         "baseline": "Zero-Shot Baseline",
+        "orchestrated": "Orchestrated (Multi-Agent MCP)",
     }.get(name, name)
 
 
-def run_strategy(query: str, strategy_key: str, mode: str):
+async def _run_strategy_async(query: str, strategy_key: str, mode: str):
     from src.tools import create_tool_registry
     from src.strategies.react import ReActStrategy
     from src.strategies.plan_execute import PlanExecuteStrategy
     from src.strategies.self_critique import SelfCritiqueStrategy
     from src.baseline import ZeroShotBaseline
+
+    if strategy_key == "orchestrated":
+        from src.agents.cache import TTLCache
+        from src.agents.mcp_session_manager import MCPSessionManager
+        from src.strategies.orchestrated import OrchestratedStrategy
+
+        # Streamlit reruns the whole script per interaction, so the MCP
+        # sessions and cache only live for this one query — no persistence
+        # across interactions the way a long-lived eval run gets.
+        async with MCPSessionManager(mode=mode) as mcp_manager:
+            cache = TTLCache()
+            strategy = OrchestratedStrategy(mcp_manager=mcp_manager, cache=cache)
+            return await strategy.run(query)
 
     tools = create_tool_registry(mode=mode)
     strategies = {
@@ -186,7 +201,12 @@ def run_strategy(query: str, strategy_key: str, mode: str):
         "critique": SelfCritiqueStrategy(tools=tools),
         "baseline": ZeroShotBaseline(),
     }
-    return strategies[strategy_key].run(query)
+    return await strategies[strategy_key].run(query)
+
+
+def run_strategy(query: str, strategy_key: str, mode: str):
+    """Streamlit's script model is synchronous — bridge into the async strategies."""
+    return asyncio.run(_run_strategy_async(query, strategy_key, mode))
 
 
 # ── Header ───────────────────────────────────────────────────────────
@@ -208,7 +228,7 @@ with st.container():
     with col1:
         strategy_key = st.selectbox(
             "Strategy",
-            options=["react", "plan", "critique", "baseline"],
+            options=["react", "plan", "critique", "baseline", "orchestrated"],
             format_func=strategy_label,
         )
     with col2:
@@ -220,8 +240,8 @@ with st.container():
 # ── Run ───────────────────────────────────────────────────────────────
 
 if run:
-    if not os.getenv("OPENAI_API_KEY"):
-        st.error("Missing OPENAI_API_KEY in .env")
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        st.error("Missing ANTHROPIC_API_KEY in .env")
         st.stop()
 
     with st.spinner(f"Planning your trip with {strategy_label(strategy_key)}..."):

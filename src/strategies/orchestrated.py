@@ -192,9 +192,12 @@ class OrchestratedStrategy(BaseStrategy):
             _add_usage(per_agent_usage, "budget", budget_usage_2)
             tracker.usage += budget_usage_2
 
+        # Fixed, generous budget for the itinerary-generating call regardless
+        # of self.max_tokens (which sizes the smaller supervisor/domain/budget
+        # calls) — matches the 4096 every other strategy uses for the same
+        # ITINERARY_TOOL_SCHEMA call, since a multi-day daily_plan can be long.
         raw_itinerary, synth_usage = await synthesize(
-            constraints, findings, self.client, self.model,
-            max_tokens=max(self.max_tokens, 2048),
+            constraints, findings, self.client, self.model, max_tokens=4096,
         )
         _add_usage(per_agent_usage, "synthesizer", synth_usage)
         tracker.usage += synth_usage
